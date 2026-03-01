@@ -82,7 +82,7 @@ docker compose up -d
 
 Chat DB is persisted via host bind mount:
 
-- `./chat-data:/app/chat/data`
+- `./chat-data:/data`
 
 ## Health and checks
 
