@@ -1,0 +1,14 @@
+.git
+.gitignore
+.vscode
+.idea
+
+node_modules
+dist
+
+chat/node_modules
+chat/dist
+.env
+.env.*
+
+chat-data

@@ -1,0 +1,13 @@
+services:
+  andromedatv:
+    container_name: andromedatv
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3834:3001"
+    env_file:
+      - .env
+    volumes:
+      - ./chat-data:/app/chat/data
