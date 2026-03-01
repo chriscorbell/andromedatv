@@ -69,7 +69,7 @@ services:
     env_file:
       - .env
     volumes:
-      - ./chat-data:/app/chat/data
+      - ./chat-data:/data
 ```
 
 Then run:
