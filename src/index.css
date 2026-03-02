@@ -28,7 +28,7 @@
   color-scheme: dark;
   font-family: "JetBrains Mono", "SFMono-Regular", Menlo, Monaco, Consolas,
     "Liberation Mono", "Courier New", monospace;
-  font-size: 20px;
+  font-size: 16px;
   --text-body: 0.8rem;
   --text-header: 1.1rem;
   text-rendering: optimizeLegibility;
@@ -195,20 +195,6 @@ button:disabled {
 
 .schedule-row[data-expanded='true'] .schedule-chevron {
   transform: rotate(180deg);
-}
-
-details[data-admin-menu] .admin-menu {
-  opacity: 0;
-  transform: translateY(-4px) scale(0.98);
-  pointer-events: none;
-  transform-origin: top right;
-  transition: opacity 160ms ease, transform 160ms ease;
-}
-
-details[data-admin-menu][open] .admin-menu {
-  opacity: 1;
-  transform: translateY(0) scale(1);
-  pointer-events: auto;
 }
 
 .schedule-details {

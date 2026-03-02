@@ -6,7 +6,6 @@ const HLS_URL = '/iptv/session/1/hls.m3u8'
 const CHAT_API_URL = '/chat'
 const CHAT_STORAGE_KEY = 'andromeda-chat-auth'
 const ADMIN_USER = 'andromedatv'
-const ADMIN_TOKEN_KEY = 'andromeda-chat-admin-token'
 
 type ScheduleItem = {
   title: string
@@ -39,12 +38,17 @@ type AdminUser = {
 }
 
 type AdminMenuView = 'main' | 'active' | 'banned'
+type AdminConfirmReturnView = AdminMenuView | 'message-actions' | null
+type AdminMessageActionTarget = {
+  messageId: number
+  nickname: string
+}
 
 const fallbackSchedule: ScheduleItem[] = [
   {
     title: 'Angel Cop',
     episode: 'S01E03 The Death Warrant',
-    time: 'live',
+    time: 'LIVE',
     description: 'A captured criminal reveals the depths of the Red May conspiracy.',
     live: true,
   },
@@ -151,7 +155,10 @@ const parseEpisodePrefix = (program: Element) => {
 function App() {
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const videoFrameRef = useRef<HTMLDivElement | null>(null)
+  const hlsRef = useRef<Hls | null>(null)
+  const hlsRestartTimeoutRef = useRef<number | null>(null)
   const chatScrollRef = useRef<HTMLDivElement | null>(null)
+  const chatInputRef = useRef<HTMLTextAreaElement | null>(null)
   const chatStreamRef = useRef<EventSource | null>(null)
   const [nowTime, setNowTime] = useState(() => new Date())
   const [infoOpen, setInfoOpen] = useState(false)
@@ -183,16 +190,22 @@ function App() {
   const [cooldownUntil, setCooldownUntil] = useState<number | null>(null)
   const [cooldownRemaining, setCooldownRemaining] = useState<number | null>(null)
   const [adminAction, setAdminAction] = useState<AdminAction | null>(null)
+  const [adminMessageActionTarget, setAdminMessageActionTarget] =
+    useState<AdminMessageActionTarget | null>(null)
+  const [adminConfirmReturnView, setAdminConfirmReturnView] =
+    useState<AdminConfirmReturnView>(null)
+  const [adminConfirmRestoreOnClose, setAdminConfirmRestoreOnClose] =
+    useState(false)
   const [adminConfirmOpen, setAdminConfirmOpen] = useState(false)
-  const [adminTokenOpen, setAdminTokenOpen] = useState(false)
-  const [adminTokenInput, setAdminTokenInput] = useState('')
-  const [adminTokenError, setAdminTokenError] = useState<string | null>(null)
   const [adminConfirmVisible, setAdminConfirmVisible] = useState(false)
   const [adminConfirmActive, setAdminConfirmActive] = useState(false)
-  const [adminTokenVisible, setAdminTokenVisible] = useState(false)
-  const [adminTokenActive, setAdminTokenActive] = useState(false)
   const adminConfirmTimeoutRef = useRef<number | null>(null)
-  const adminTokenTimeoutRef = useRef<number | null>(null)
+  const [adminMessageActionsOpen, setAdminMessageActionsOpen] = useState(false)
+  const [adminMessageActionsVisible, setAdminMessageActionsVisible] =
+    useState(false)
+  const [adminMessageActionsActive, setAdminMessageActionsActive] =
+    useState(false)
+  const adminMessageActionsTimeoutRef = useRef<number | null>(null)
   const [adminMenuOpen, setAdminMenuOpen] = useState(false)
   const [adminMenuVisible, setAdminMenuVisible] = useState(false)
   const [adminMenuActive, setAdminMenuActive] = useState(false)
@@ -213,8 +226,24 @@ function App() {
     video.muted = isMuted
     video.volume = volume
 
+    const clearRestartTimer = () => {
+      if (hlsRestartTimeoutRef.current) {
+        window.clearTimeout(hlsRestartTimeoutRef.current)
+        hlsRestartTimeoutRef.current = null
+      }
+    }
+
+    const destroyHls = () => {
+      if (!hlsRef.current) {
+        return
+      }
+      hlsRef.current.destroy()
+      hlsRef.current = null
+    }
+
     if (video.canPlayType('application/vnd.apple.mpegurl')) {
       video.src = HLS_URL
+      void video.play().catch(() => {})
       return
     }
 
@@ -222,16 +251,102 @@ function App() {
       return
     }
 
-    const hls = new Hls({
-      enableWorker: true,
-      lowLatencyMode: true,
-    })
+    let recoveryInProgress = false
+    let playbackWatchdog: number | null = null
+    let lastPlaybackTime = 0
+    let stalledChecks = 0
 
-    hls.loadSource(HLS_URL)
-    hls.attachMedia(video)
+    const startHls = () => {
+      clearRestartTimer()
+      destroyHls()
+
+      const hls = new Hls({
+        enableWorker: true,
+        lowLatencyMode: true,
+      })
+
+      hlsRef.current = hls
+
+      hls.on(Hls.Events.MEDIA_ATTACHED, () => {
+        hls.loadSource(HLS_URL)
+      })
+
+      hls.on(Hls.Events.ERROR, (_event, data) => {
+        if (!data.fatal) {
+          return
+        }
+
+        if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+          hls.startLoad()
+          return
+        }
+
+        if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+          if (recoveryInProgress) {
+            return
+          }
+
+          recoveryInProgress = true
+          hls.recoverMediaError()
+          window.setTimeout(() => {
+            recoveryInProgress = false
+          }, 1500)
+          return
+        }
+
+        hlsRestartTimeoutRef.current = window.setTimeout(() => {
+          startHls()
+        }, 500)
+      })
+
+      hls.attachMedia(video)
+    }
+
+    const nudgePlayback = () => {
+      if (hlsRef.current) {
+        hlsRef.current.startLoad()
+      }
+      void video.play().catch(() => {})
+    }
+
+    const handleWaiting = () => {
+      nudgePlayback()
+    }
+
+    startHls()
+    video.addEventListener('waiting', handleWaiting)
+    video.addEventListener('stalled', handleWaiting)
+
+    playbackWatchdog = window.setInterval(() => {
+      if (video.paused || video.ended) {
+        lastPlaybackTime = video.currentTime
+        stalledChecks = 0
+        return
+      }
+
+      const currentTime = video.currentTime
+      if (currentTime <= lastPlaybackTime + 0.01) {
+        stalledChecks += 1
+      } else {
+        stalledChecks = 0
+      }
+
+      lastPlaybackTime = currentTime
+
+      if (stalledChecks >= 3) {
+        stalledChecks = 0
+        nudgePlayback()
+      }
+    }, 10_000)
 
     return () => {
-      hls.destroy()
+      video.removeEventListener('waiting', handleWaiting)
+      video.removeEventListener('stalled', handleWaiting)
+      if (playbackWatchdog) {
+        window.clearInterval(playbackWatchdog)
+      }
+      clearRestartTimer()
+      destroyHls()
     }
   }, [])
 
@@ -407,6 +522,16 @@ function App() {
     }, 600)
   }
 
+  const syncScheduleTitleTooltip = (target: HTMLSpanElement) => {
+    const isTruncated = target.scrollWidth > target.clientWidth
+    if (isTruncated) {
+      target.title = target.dataset.fullTitle || target.textContent || ''
+      return
+    }
+
+    target.removeAttribute('title')
+  }
+
   useEffect(() => {
     return () => {
       if (hideTimeoutRef.current) {
@@ -513,42 +638,68 @@ function App() {
       setAdminConfirmActive(false)
       adminConfirmTimeoutRef.current = window.setTimeout(() => {
         setAdminConfirmVisible(false)
+        const returnView = adminConfirmRestoreOnClose
+          ? adminConfirmReturnView
+          : null
+        setAdminAction(null)
+        setAdminConfirmReturnView(null)
+        setAdminConfirmRestoreOnClose(false)
+
+        if (returnView) {
+          if (returnView === 'message-actions') {
+            if (adminMessageActionTarget) {
+              setAdminMessageActionsOpen(true)
+            }
+          } else {
+            setAdminMenuView(returnView)
+            setAdminMenuOpen(true)
+            if (returnView !== 'main') {
+              void fetchAdminUsers(returnView)
+            }
+          }
+        }
       }, 200)
     }
-  }, [adminConfirmOpen, adminConfirmVisible])
+  }, [
+    adminConfirmOpen,
+    adminConfirmVisible,
+    adminConfirmRestoreOnClose,
+    adminConfirmReturnView,
+    adminMessageActionTarget,
+  ])
 
   useEffect(() => {
-    if (adminTokenTimeoutRef.current) {
-      window.clearTimeout(adminTokenTimeoutRef.current)
-      adminTokenTimeoutRef.current = null
+    if (adminMessageActionsTimeoutRef.current) {
+      window.clearTimeout(adminMessageActionsTimeoutRef.current)
+      adminMessageActionsTimeoutRef.current = null
     }
 
-    if (adminTokenOpen) {
-      setAdminTokenVisible(true)
-      setAdminTokenActive(false)
+    if (adminMessageActionsOpen) {
+      setAdminMessageActionsVisible(true)
+      setAdminMessageActionsActive(false)
       window.requestAnimationFrame(() => {
         window.requestAnimationFrame(() => {
-          setAdminTokenActive(true)
+          setAdminMessageActionsActive(true)
         })
       })
       return
     }
 
-    if (adminTokenVisible) {
-      setAdminTokenActive(false)
-      adminTokenTimeoutRef.current = window.setTimeout(() => {
-        setAdminTokenVisible(false)
+    if (adminMessageActionsVisible) {
+      setAdminMessageActionsActive(false)
+      adminMessageActionsTimeoutRef.current = window.setTimeout(() => {
+        setAdminMessageActionsVisible(false)
       }, 200)
     }
-  }, [adminTokenOpen, adminTokenVisible])
+  }, [adminMessageActionsOpen, adminMessageActionsVisible])
 
   useEffect(() => {
     return () => {
       if (adminConfirmTimeoutRef.current) {
         window.clearTimeout(adminConfirmTimeoutRef.current)
       }
-      if (adminTokenTimeoutRef.current) {
-        window.clearTimeout(adminTokenTimeoutRef.current)
+      if (adminMessageActionsTimeoutRef.current) {
+        window.clearTimeout(adminMessageActionsTimeoutRef.current)
       }
       if (adminMenuTimeoutRef.current) {
         window.clearTimeout(adminMenuTimeoutRef.current)
@@ -584,30 +735,6 @@ function App() {
     }
   }, [adminMenuOpen, adminMenuVisible])
 
-
-  useEffect(() => {
-    const handleOutsideClick = (event: MouseEvent) => {
-      const target = event.target as HTMLElement | null
-      if (!target) {
-        return
-      }
-
-      if (target.closest('[data-admin-menu]')) {
-        return
-      }
-
-      document
-        .querySelectorAll<HTMLDetailsElement>('details[data-admin-menu][open]')
-        .forEach((element) => {
-          element.open = false
-        })
-    }
-
-    document.addEventListener('click', handleOutsideClick)
-    return () => {
-      document.removeEventListener('click', handleOutsideClick)
-    }
-  }, [])
 
   const clearAuth = () => {
     setAuthToken(null)
@@ -905,6 +1032,16 @@ function App() {
   }, [chatMessages.length])
 
   useEffect(() => {
+    const chatInput = chatInputRef.current
+    if (!chatInput) {
+      return
+    }
+
+    chatInput.style.height = 'auto'
+    chatInput.style.height = `${chatInput.scrollHeight}px`
+  }, [messageBody])
+
+  useEffect(() => {
     if (!cooldownUntil) {
       setCooldownRemaining(null)
       return
@@ -981,7 +1118,7 @@ function App() {
       return
     }
 
-    const trimmed = messageBody.trim()
+    const trimmed = messageBody.replace(/[\r\n]+/g, ' ').trim()
     if (!trimmed) {
       return
     }
@@ -1025,30 +1162,39 @@ function App() {
     }
   }
 
-  const getStoredAdminToken = () => window.localStorage.getItem(ADMIN_TOKEN_KEY)
-
-  const openAdminConfirm = (action: AdminAction) => {
+  const openAdminConfirm = (
+    action: AdminAction,
+    returnView: AdminConfirmReturnView = null,
+  ) => {
     if (authNickname !== ADMIN_USER) {
       return
     }
     setAdminAction(action)
+    setAdminConfirmReturnView(returnView)
+    setAdminConfirmRestoreOnClose(false)
     setAdminConfirmOpen(true)
   }
 
-  const performAdminAction = async (action: AdminAction, adminToken: string) => {
+  const performAdminAction = async (action: AdminAction) => {
+    if (!authToken || authNickname !== ADMIN_USER) {
+      setChatError('Admin authorization required.')
+      return
+    }
+
+    const adminHeaders = {
+      Authorization: `Bearer ${authToken}`,
+    }
+
     try {
       if (action.kind === 'clear') {
         const response = await fetch(`${CHAT_API_URL}/admin/clear`, {
           method: 'POST',
-          headers: {
-            'X-Admin-Token': adminToken,
-          },
+          headers: adminHeaders,
         })
 
         if (!response.ok) {
-          if (response.status === 401) {
-            window.localStorage.removeItem(ADMIN_TOKEN_KEY)
-            setChatError('Admin token invalid.')
+          if (response.status === 401 || response.status === 403) {
+            setChatError('Admin authorization failed.')
             return
           }
           setChatError('Failed to clear chat history.')
@@ -1064,16 +1210,13 @@ function App() {
           `${CHAT_API_URL}/admin/messages/${action.messageId}/delete`,
           {
             method: 'POST',
-            headers: {
-              'X-Admin-Token': adminToken,
-            },
+            headers: adminHeaders,
           },
         )
 
         if (!response.ok) {
-          if (response.status === 401) {
-            window.localStorage.removeItem(ADMIN_TOKEN_KEY)
-            setChatError('Admin token invalid.')
+          if (response.status === 401 || response.status === 403) {
+            setChatError('Admin authorization failed.')
             return
           }
           setChatError('Failed to delete message.')
@@ -1096,16 +1239,13 @@ function App() {
           `${CHAT_API_URL}/admin/messages/${action.messageId}/warn`,
           {
             method: 'POST',
-            headers: {
-              'X-Admin-Token': adminToken,
-            },
+            headers: adminHeaders,
           },
         )
 
         if (!response.ok) {
-          if (response.status === 401) {
-            window.localStorage.removeItem(ADMIN_TOKEN_KEY)
-            setChatError('Admin token invalid.')
+          if (response.status === 401 || response.status === 403) {
+            setChatError('Admin authorization failed.')
             return
           }
           setChatError('Failed to warn user.')
@@ -1128,16 +1268,13 @@ function App() {
           `${CHAT_API_URL}/admin/users/${encodeURIComponent(action.nickname)}/ban`,
           {
             method: 'POST',
-            headers: {
-              'X-Admin-Token': adminToken,
-            },
+            headers: adminHeaders,
           },
         )
 
         if (!response.ok) {
-          if (response.status === 401) {
-            window.localStorage.removeItem(ADMIN_TOKEN_KEY)
-            setChatError('Admin token invalid.')
+          if (response.status === 401 || response.status === 403) {
+            setChatError('Admin authorization failed.')
             return
           }
           setChatError('Failed to ban user.')
@@ -1159,16 +1296,13 @@ function App() {
           `${CHAT_API_URL}/admin/users/${encodeURIComponent(action.nickname)}/unban`,
           {
             method: 'POST',
-            headers: {
-              'X-Admin-Token': adminToken,
-            },
+            headers: adminHeaders,
           },
         )
 
         if (!response.ok) {
-          if (response.status === 401) {
-            window.localStorage.removeItem(ADMIN_TOKEN_KEY)
-            setChatError('Admin token invalid.')
+          if (response.status === 401 || response.status === 403) {
+            setChatError('Admin authorization failed.')
             return
           }
           setChatError('Failed to unban user.')
@@ -1183,16 +1317,13 @@ function App() {
           `${CHAT_API_URL}/admin/users/${encodeURIComponent(action.nickname)}`,
           {
             method: 'DELETE',
-            headers: {
-              'X-Admin-Token': adminToken,
-            },
+            headers: adminHeaders,
           },
         )
 
         if (!response.ok) {
-          if (response.status === 401) {
-            window.localStorage.removeItem(ADMIN_TOKEN_KEY)
-            setChatError('Admin token invalid.')
+          if (response.status === 401 || response.status === 403) {
+            setChatError('Admin authorization failed.')
             return
           }
           setChatError('Failed to delete user.')
@@ -1216,52 +1347,16 @@ function App() {
       return
     }
 
-    const adminToken = getStoredAdminToken()
-    if (!adminToken) {
-      setAdminTokenInput('')
-      setAdminTokenError(null)
-      setAdminTokenOpen(true)
-      return
-    }
-
-    await performAdminAction(adminAction, adminToken)
-    setAdminAction(null)
-  }
-
-  const submitAdminToken = async () => {
-    if (!adminAction) {
-      setAdminTokenOpen(false)
-      return
-    }
-
-    const token = adminTokenInput.trim()
-    if (!token) {
-      setAdminTokenError('Admin token required.')
-      return
-    }
-
-    window.localStorage.setItem(ADMIN_TOKEN_KEY, token)
-    setAdminTokenOpen(false)
-    setAdminTokenInput('')
-    setAdminTokenError(null)
-    await performAdminAction(adminAction, token)
-    setAdminAction(null)
+    await performAdminAction(adminAction)
   }
 
   const cancelAdminConfirm = () => {
+    setAdminConfirmRestoreOnClose(adminConfirmReturnView !== null)
     setAdminConfirmOpen(false)
-    setAdminAction(null)
-  }
-
-  const cancelAdminToken = () => {
-    setAdminTokenOpen(false)
-    setAdminTokenInput('')
-    setAdminTokenError(null)
-    setAdminAction(null)
   }
 
   useEffect(() => {
-    if (!adminConfirmOpen && !adminTokenOpen && !adminMenuOpen) {
+    if (!adminConfirmOpen && !adminMenuOpen && !adminMessageActionsOpen) {
       return
     }
 
@@ -1270,9 +1365,6 @@ function App() {
         if (adminConfirmOpen) {
           cancelAdminConfirm()
         }
-        if (adminTokenOpen) {
-          cancelAdminToken()
-        }
         if (adminMenuOpen) {
           if (adminMenuView !== 'main') {
             backToAdminMain()
@@ -1280,15 +1372,13 @@ function App() {
             closeAdminMenu()
           }
         }
+        if (adminMessageActionsOpen) {
+          closeAdminMessageActions()
+        }
         return
       }
 
       if (event.key !== 'Enter') {
-        return
-      }
-
-      if (adminTokenOpen) {
-        void submitAdminToken()
         return
       }
 
@@ -1301,23 +1391,37 @@ function App() {
     return () => {
       window.removeEventListener('keydown', handleKey)
     }
-  }, [adminConfirmOpen, adminTokenOpen, adminAction, adminMenuOpen, adminMenuView])
+  }, [
+    adminConfirmOpen,
+    adminAction,
+    adminMenuOpen,
+    adminMenuView,
+    adminMessageActionsOpen,
+  ])
 
-  const closeAdminMenus = () => {
-    document
-      .querySelectorAll<HTMLDetailsElement>('details[data-admin-menu][open]')
-      .forEach((element) => {
-        element.open = false
-      })
+  const openAdminMessageActions = (messageId: number, nickname: string) => {
+    if (authNickname !== ADMIN_USER) {
+      return
+    }
+    setAdminMessageActionTarget({ messageId, nickname })
+    setAdminMessageActionsOpen(true)
+  }
+
+  const closeAdminMessageActions = () => {
+    setAdminMessageActionsOpen(false)
+  }
+
+  const selectAdminMessageAction = (
+    action: Extract<AdminAction, { kind: 'delete' | 'warn' | 'ban' }>,
+  ) => {
+    openAdminConfirm(action, 'message-actions')
+    setAdminMessageActionsOpen(false)
   }
 
   const fetchAdminUsers = async (view: 'active' | 'banned') => {
-    const adminToken = getStoredAdminToken()
-    if (!adminToken) {
+    if (!authToken || authNickname !== ADMIN_USER) {
       setAdminMenuOpen(false)
-      setAdminTokenInput('')
-      setAdminTokenError(null)
-      setAdminTokenOpen(true)
+      setChatError('Admin authorization required.')
       return
     }
 
@@ -1325,13 +1429,14 @@ function App() {
     try {
       const endpoint = view === 'active' ? 'active' : 'banned'
       const response = await fetch(`${CHAT_API_URL}/admin/users/${endpoint}`, {
-        headers: { 'X-Admin-Token': adminToken },
+        headers: {
+          Authorization: `Bearer ${authToken}`,
+        },
       })
 
       if (!response.ok) {
-        if (response.status === 401) {
-          window.localStorage.removeItem(ADMIN_TOKEN_KEY)
-          setChatError('Admin token invalid.')
+        if (response.status === 401 || response.status === 403) {
+          setChatError('Admin authorization failed.')
           setAdminMenuOpen(false)
           return
         }
@@ -1377,8 +1482,8 @@ function App() {
   }
 
   const handleAdminUserAction = (action: AdminAction) => {
+    openAdminConfirm(action, adminMenuView)
     setAdminMenuOpen(false)
-    openAdminConfirm(action)
   }
 
   const adminConfirmTitle = adminAction
@@ -1421,11 +1526,24 @@ function App() {
           <span className="ui-header font-extrabold">andromeda</span>
           <button
             type="button"
-            className="ml-auto inline-flex items-center gap-2 text-zinc-500 transition hover:text-zinc-200 cursor-pointer"
+            className="ml-auto inline-flex h-6 w-6 items-center justify-center text-zinc-500 transition hover:text-zinc-200 cursor-pointer"
             onClick={() => setInfoOpen(true)}
             aria-label="About andromeda"
           >
-            info
+            <svg
+              viewBox="0 0 24 24"
+              className="h-4 w-4"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.7"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <circle cx="12" cy="12" r="9" />
+              <path d="M12 10v6" />
+              <path d="M12 7h.01" />
+            </svg>
           </button>
         </header>
         <div className="layout-shell flex min-h-0 flex-1 flex-col animate-[fadeIn_700ms_ease-out] motion-reduce:animate-none lg:grid lg:grid-cols-[auto_minmax(240px,1fr)]">
@@ -1563,7 +1681,7 @@ function App() {
                       >
                         <button
                           type="button"
-                          className={`schedule-row flex w-full items-center justify-between gap-3 rounded-md px-4 py-3 text-left text-zinc-100 transition ${hasDetails ? 'hover:bg-zinc-900/60 hover:text-white' : ''}`}
+                          className={`schedule-row flex w-full items-center gap-3 rounded-md px-4 py-3 text-left text-zinc-100 transition ${hasDetails ? 'hover:bg-zinc-900/60 hover:text-white' : ''}`}
                           onClick={() =>
                             setExpandedScheduleKey((prev) =>
                               prev === itemKey ? null : itemKey,
@@ -1574,17 +1692,23 @@ function App() {
                           data-clickable={hasDetails}
                           disabled={!hasDetails}
                         >
-                          <span className="truncate text-zinc-400">
+                          <span
+                            className="min-w-0 flex-1 truncate text-zinc-400"
+                            data-full-title={item.title}
+                            onMouseEnter={(event) =>
+                              syncScheduleTitleTooltip(event.currentTarget)
+                            }
+                          >
                             {item.title}
                           </span>
-                          <span className="flex items-center gap-2">
+                          <span className="flex shrink-0 items-center gap-2 whitespace-nowrap">
                             {item.live ? (
-                              <span className="flex items-center gap-2 text-zinc-200">
+                              <span className="flex items-center gap-2 whitespace-nowrap text-zinc-200">
                                 <span className="inline-flex h-1.5 w-1.5 rounded-full bg-[var(--color-accent-red)]" />
-                                live
+                                LIVE
                               </span>
                             ) : (
-                              <span className="text-zinc-500">
+                              <span className="whitespace-nowrap text-zinc-500">
                                 {item.time}
                               </span>
                             )}
@@ -1655,7 +1779,7 @@ function App() {
                           className="px-4 py-2 text-zinc-400 animate-[fadeIn_220ms_ease-out] motion-reduce:animate-none"
                         >
                           <div className="flex items-start justify-between gap-3">
-                            <div>
+                            <div className="min-w-0">
                               <span
                                 className={
                                   entry.nickname === 'system'
@@ -1668,60 +1792,33 @@ function App() {
                                 {entry.nickname}
                               </span>{' '}
                               {entry.body === 'message deleted' ? (
-                                <span className="italic text-zinc-500">message deleted</span>
+                                <span className="italic break-words whitespace-pre-wrap text-zinc-500">message deleted</span>
                               ) : entry.nickname === 'system' ? (
-                                <span className="italic text-zinc-500">{entry.body}</span>
+                                <span className="italic break-words whitespace-pre-wrap text-zinc-500">{entry.body}</span>
                               ) : (
-                                <span>{entry.body}</span>
+                                <span className="break-words whitespace-pre-wrap">{entry.body}</span>
                               )}
                             </div>
                             {authNickname === ADMIN_USER && (
-                              <details className="relative shrink-0" data-admin-menu>
-                                <summary className="list-none cursor-pointer text-xs text-zinc-500 transition hover:text-zinc-200">
-                                  admin
-                                </summary>
-                                <div className="admin-menu absolute right-0 mt-1 w-40 border border-zinc-800 bg-[#050505] p-1 text-xs text-zinc-200 shadow-lg">
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      openAdminConfirm({
-                                        kind: 'delete',
-                                        messageId: entry.id,
-                                      })
-                                      closeAdminMenus()
-                                    }}
-                                    className="block w-full px-2 py-1 text-left text-zinc-400 transition hover:text-zinc-100 cursor-pointer"
-                                  >
-                                    delete
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      openAdminConfirm({
-                                        kind: 'warn',
-                                        messageId: entry.id,
-                                      })
-                                      closeAdminMenus()
-                                    }}
-                                    className="block w-full px-2 py-1 text-left text-zinc-400 transition hover:text-zinc-100 cursor-pointer"
-                                  >
-                                    delete and warn
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      openAdminConfirm({
-                                        kind: 'ban',
-                                        nickname: entry.nickname,
-                                      })
-                                      closeAdminMenus()
-                                    }}
-                                    className="block w-full px-2 py-1 text-left text-zinc-400 transition hover:text-zinc-100 cursor-pointer"
-                                  >
-                                    ban
-                                  </button>
-                                </div>
-                              </details>
+                              <button
+                                type="button"
+                                className="inline-flex h-5 w-5 shrink-0 items-center justify-center text-zinc-500 transition hover:text-zinc-200 cursor-pointer"
+                                aria-label="Message admin actions"
+                                onClick={() =>
+                                  openAdminMessageActions(entry.id, entry.nickname)
+                                }
+                              >
+                                <svg
+                                  viewBox="0 0 24 24"
+                                  className="h-3.5 w-3.5"
+                                  fill="currentColor"
+                                  aria-hidden="true"
+                                >
+                                  <circle cx="12" cy="5" r="1.8" />
+                                  <circle cx="12" cy="12" r="1.8" />
+                                  <circle cx="12" cy="19" r="1.8" />
+                                </svg>
+                              </button>
                             )}
                           </div>
                         </li>
@@ -1737,13 +1834,47 @@ function App() {
                         {chatNotice}
                       </div>
                     )}
-                    <div className="flex items-center gap-2">
-                      <input
+                    <div className="flex items-end gap-2">
+                      <textarea
+                        ref={chatInputRef}
                         value={messageBody}
-                        onChange={(event) => setMessageBody(event.target.value)}
+                        onChange={(event) => {
+                          setMessageBody(event.target.value)
+                          event.target.style.height = 'auto'
+                          event.target.style.height = `${event.target.scrollHeight}px`
+                        }}
+                        onPaste={(event) => {
+                          event.preventDefault()
+                          const pasted = event.clipboardData
+                            .getData('text')
+                            .replace(/[\r\n]+/g, ' ')
+                          const target = event.currentTarget
+                          const start = target.selectionStart ?? 0
+                          const end = target.selectionEnd ?? start
+                          const nextValue =
+                            target.value.slice(0, start) +
+                            pasted +
+                            target.value.slice(end)
+
+                          setMessageBody(nextValue)
+
+                          const caretPosition = start + pasted.length
+                          requestAnimationFrame(() => {
+                            target.setSelectionRange(caretPosition, caretPosition)
+                            target.style.height = 'auto'
+                            target.style.height = `${target.scrollHeight}px`
+                          })
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') {
+                            event.preventDefault()
+                            event.currentTarget.form?.requestSubmit()
+                          }
+                        }}
                         placeholder="Type a message"
                         disabled={Boolean(cooldownUntil)}
-                        className="h-9 flex-1 border border-zinc-700 bg-black/40 px-3 text-zinc-100 placeholder:text-zinc-600 focus:border-zinc-500 focus:outline-none disabled:opacity-60"
+                        rows={1}
+                        className="max-h-64 min-h-9 flex-1 resize-none overflow-hidden border border-zinc-700 bg-black/40 px-3 py-2 text-zinc-100 placeholder:text-zinc-600 focus:border-zinc-500 focus:outline-none disabled:opacity-60"
                       />
                       <button
                         type="submit"
@@ -1777,10 +1908,23 @@ function App() {
                       {authNickname === ADMIN_USER ? (
                         <button
                           type="button"
-                          className="text-zinc-400 hover:text-zinc-200 cursor-pointer"
+                          className="inline-flex h-6 w-6 items-center justify-center text-zinc-400 transition hover:text-zinc-200 cursor-pointer"
                           onClick={() => setAdminMenuOpen(true)}
+                          aria-label="Open admin menu"
                         >
-                          admin
+                          <svg
+                            viewBox="0 0 24 24"
+                            className="h-4 w-4"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.7"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            aria-hidden="true"
+                          >
+                            <path d="M12 3l7 3v6c0 4.2-2.9 8-7 9-4.1-1-7-4.8-7-9V6l7-3z" />
+                            <path d="M9.5 12.5l1.7 1.7 3.3-3.3" />
+                          </svg>
                         </button>
                       ) : (
                         <span aria-hidden="true" />
@@ -1806,7 +1950,7 @@ function App() {
                           className="px-4 py-2 text-zinc-400 animate-[fadeIn_220ms_ease-out] motion-reduce:animate-none"
                         >
                           <div className="flex items-start justify-between gap-3">
-                            <div>
+                            <div className="min-w-0">
                               <span
                                 className={
                                   entry.nickname === 'system'
@@ -1819,60 +1963,33 @@ function App() {
                                 {entry.nickname}
                               </span>{' '}
                               {entry.body === 'message deleted' ? (
-                                <span className="italic text-zinc-500">message deleted</span>
+                                <span className="italic break-words whitespace-pre-wrap text-zinc-500">message deleted</span>
                               ) : entry.nickname === 'system' ? (
-                                <span className="italic text-zinc-500">{entry.body}</span>
+                                <span className="italic break-words whitespace-pre-wrap text-zinc-500">{entry.body}</span>
                               ) : (
-                                <span>{entry.body}</span>
+                                <span className="break-words whitespace-pre-wrap">{entry.body}</span>
                               )}
                             </div>
                             {authNickname === ADMIN_USER && (
-                              <details className="relative shrink-0" data-admin-menu>
-                                <summary className="list-none cursor-pointer text-xs text-zinc-500 transition hover:text-zinc-200">
-                                  admin
-                                </summary>
-                                <div className="admin-menu absolute right-0 mt-1 w-40 border border-zinc-800 bg-[#050505] p-1 text-xs text-zinc-200 shadow-lg">
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      openAdminConfirm({
-                                        kind: 'delete',
-                                        messageId: entry.id,
-                                      })
-                                      closeAdminMenus()
-                                    }}
-                                    className="block w-full px-2 py-1 text-left text-zinc-400 transition hover:text-zinc-100 cursor-pointer"
-                                  >
-                                    delete
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      openAdminConfirm({
-                                        kind: 'warn',
-                                        messageId: entry.id,
-                                      })
-                                      closeAdminMenus()
-                                    }}
-                                    className="block w-full px-2 py-1 text-left text-zinc-400 transition hover:text-zinc-100 cursor-pointer"
-                                  >
-                                    delete and warn
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      openAdminConfirm({
-                                        kind: 'ban',
-                                        nickname: entry.nickname,
-                                      })
-                                      closeAdminMenus()
-                                    }}
-                                    className="block w-full px-2 py-1 text-left text-zinc-400 transition hover:text-zinc-100 cursor-pointer"
-                                  >
-                                    ban
-                                  </button>
-                                </div>
-                              </details>
+                              <button
+                                type="button"
+                                className="inline-flex h-5 w-5 shrink-0 items-center justify-center text-zinc-500 transition hover:text-zinc-200 cursor-pointer"
+                                aria-label="Message admin actions"
+                                onClick={() =>
+                                  openAdminMessageActions(entry.id, entry.nickname)
+                                }
+                              >
+                                <svg
+                                  viewBox="0 0 24 24"
+                                  className="h-3.5 w-3.5"
+                                  fill="currentColor"
+                                  aria-hidden="true"
+                                >
+                                  <circle cx="12" cy="5" r="1.8" />
+                                  <circle cx="12" cy="12" r="1.8" />
+                                  <circle cx="12" cy="19" r="1.8" />
+                                </svg>
+                              </button>
                             )}
                           </div>
                         </li>
@@ -1962,11 +2079,23 @@ function App() {
                     <div className="ui-header font-extrabold">admin</div>
                     <button
                       type="button"
-                      className="text-zinc-500 transition hover:text-zinc-200 cursor-pointer"
+                      className="inline-flex h-6 w-6 items-center justify-center text-zinc-500 transition hover:text-zinc-200 cursor-pointer"
                       onClick={closeAdminMenu}
                       aria-label="Close admin menu"
                     >
-                      close
+                      <svg
+                        viewBox="0 0 24 24"
+                        className="h-4 w-4"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden="true"
+                      >
+                        <path d="M6 6l12 12" />
+                        <path d="M18 6l-12 12" />
+                      </svg>
                     </button>
                   </div>
                   <div className="mt-4 flex flex-col gap-2">
@@ -1974,8 +2103,8 @@ function App() {
                       type="button"
                       className="w-full border border-zinc-800 px-3 py-2 text-left text-zinc-400 transition hover:border-zinc-600 hover:text-zinc-100 cursor-pointer"
                       onClick={() => {
+                        openAdminConfirm({ kind: 'clear' }, 'main')
                         closeAdminMenu()
-                        openAdminConfirm({ kind: 'clear' })
                       }}
                     >
                       wipe chat
@@ -2014,11 +2143,23 @@ function App() {
                     </div>
                     <button
                       type="button"
-                      className="ml-auto text-zinc-500 transition hover:text-zinc-200 cursor-pointer"
+                      className="ml-auto inline-flex h-6 w-6 items-center justify-center text-zinc-500 transition hover:text-zinc-200 cursor-pointer"
                       onClick={closeAdminMenu}
                       aria-label="Close admin menu"
                     >
-                      close
+                      <svg
+                        viewBox="0 0 24 24"
+                        className="h-4 w-4"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden="true"
+                      >
+                        <path d="M6 6l12 12" />
+                        <path d="M18 6l-12 12" />
+                      </svg>
                     </button>
                   </div>
                   <div className="px-6 pt-4">
@@ -2124,7 +2265,86 @@ function App() {
           </div>
         </div>
       )}
-      {adminConfirmVisible && adminAction && (
+      {adminMessageActionsVisible && adminMessageActionTarget && (
+        <div
+          className={`fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4 transition-opacity duration-200 ${adminMessageActionsActive ? 'opacity-100' : 'pointer-events-none opacity-0'
+            }`}
+          onClick={closeAdminMessageActions}
+        >
+          <div
+            className={`w-full max-w-sm border border-zinc-800 bg-[#050505] p-6 text-zinc-200 shadow-xl transition duration-200 ${adminMessageActionsActive ? 'translate-y-0 scale-100 opacity-100' : 'translate-y-2 scale-95 opacity-0'
+              }`}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div className="ui-header font-extrabold">message actions</div>
+              <button
+                type="button"
+                className="inline-flex h-6 w-6 items-center justify-center text-zinc-500 transition hover:text-zinc-200 cursor-pointer"
+                onClick={closeAdminMessageActions}
+                aria-label="Close message actions"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  className="h-4 w-4"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M6 6l12 12" />
+                  <path d="M18 6l-12 12" />
+                </svg>
+              </button>
+            </div>
+            <p className="mt-3 text-zinc-500">
+              choose an action for{' '}
+              <span className="text-zinc-300">{adminMessageActionTarget.nickname}</span>
+            </p>
+            <div className="mt-4 flex flex-col gap-2">
+              <button
+                type="button"
+                className="w-full border border-zinc-800 px-3 py-2 text-left text-zinc-400 transition hover:border-zinc-600 hover:text-zinc-100 cursor-pointer"
+                onClick={() =>
+                  selectAdminMessageAction({
+                    kind: 'delete',
+                    messageId: adminMessageActionTarget.messageId,
+                  })
+                }
+              >
+                delete
+              </button>
+              <button
+                type="button"
+                className="w-full border border-zinc-800 px-3 py-2 text-left text-zinc-400 transition hover:border-zinc-600 hover:text-zinc-100 cursor-pointer"
+                onClick={() =>
+                  selectAdminMessageAction({
+                    kind: 'warn',
+                    messageId: adminMessageActionTarget.messageId,
+                  })
+                }
+              >
+                delete and warn
+              </button>
+              <button
+                type="button"
+                className="w-full border border-zinc-800 px-3 py-2 text-left text-zinc-400 transition hover:border-zinc-600 hover:text-zinc-100 cursor-pointer"
+                onClick={() =>
+                  selectAdminMessageAction({
+                    kind: 'ban',
+                    nickname: adminMessageActionTarget.nickname,
+                  })
+                }
+              >
+                ban
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {adminConfirmVisible && (
         <div
           className={`fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4 transition-opacity duration-200 ${adminConfirmActive ? 'opacity-100' : 'pointer-events-none opacity-0'
             }`}
@@ -2159,52 +2379,6 @@ function App() {
           </div>
         </div>
       )}
-      {adminTokenVisible && (
-        <div
-          className={`fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4 transition-opacity duration-200 ${adminTokenActive ? 'opacity-100' : 'pointer-events-none opacity-0'
-            }`}
-          onClick={cancelAdminToken}
-        >
-          <div
-            className={`w-full max-w-md border border-zinc-800 bg-[#050505] p-6 text-zinc-200 shadow-xl transition duration-200 ${adminTokenActive ? 'translate-y-0 scale-100 opacity-100' : 'translate-y-2 scale-95 opacity-0'
-              }`}
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="ui-header font-extrabold">admin token</div>
-            <p className="mt-3 text-zinc-400">
-              enter the admin token to continue.
-            </p>
-            <input
-              type="password"
-              value={adminTokenInput}
-              onChange={(event) => setAdminTokenInput(event.target.value)}
-              placeholder="admin token"
-              className="mt-3 h-9 w-full border border-zinc-700 bg-black/40 px-3 text-zinc-100 placeholder:text-zinc-600 focus:border-zinc-500 focus:outline-none"
-            />
-            {adminTokenError && (
-              <div className="mt-2 text-[var(--color-accent-red)]">
-                {adminTokenError}
-              </div>
-            )}
-            <div className="mt-4 flex items-center justify-end gap-3">
-              <button
-                type="button"
-                className="text-zinc-400 transition hover:text-zinc-100 cursor-pointer"
-                onClick={cancelAdminToken}
-              >
-                cancel
-              </button>
-              <button
-                type="button"
-                className="border border-zinc-700 bg-zinc-900 px-3 py-1 text-zinc-100 transition hover:border-zinc-500 cursor-pointer"
-                onClick={submitAdminToken}
-              >
-                continue
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
       {infoVisible && (
         <div
           className={`fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4 transition-opacity duration-200 ${infoActive ? 'opacity-100' : 'pointer-events-none opacity-0'
@@ -2220,40 +2394,43 @@ function App() {
               <div className="ui-header font-extrabold">about</div>
               <button
                 type="button"
-                className="text-zinc-500 transition hover:text-zinc-200 cursor-pointer"
+                className="inline-flex h-6 w-6 items-center justify-center text-zinc-500 transition hover:text-zinc-200 cursor-pointer"
                 onClick={() => setInfoOpen(false)}
                 aria-label="Close info"
               >
-                close
+                <svg
+                  viewBox="0 0 24 24"
+                  className="h-4 w-4"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M6 6l12 12" />
+                  <path d="M18 6l-12 12" />
+                </svg>
               </button>
             </div>
             <div>
               <p className="mt-3 text-zinc-400">
-                andromeda is a 24/7 experimental anime stream with a live
-                schedule and community chat.
+                andromeda is a 24/7 livestream of 80s & 90s anime (primarily 
+                mecha and cyberpunk), with a live schedule and community chat.
               </p>
               <p className="mt-3 text-zinc-400">
-                sign in or create an account to join the chat - no email or
+                sign in or create an account to join the chat. no email or
                 verification needed. passwords are securely hashed and salted
-                before being stored in the db.
+                before they get stored in the database.
               </p>
               <p className="mt-3 text-zinc-400">
-                the stream and schedule uses a self-hosted ersatztv instance
-                for the backend.
+                powered by docker, typescript, react, vite, tailwindcss, 
+                bun, sqlite, ersatztv and jellyfin.
               </p>
-              <p className="mt-3 text-zinc-400">
-                the chat uses a custom self-hosted backend built with node,
-                express, sqlite and docker - utilizing a simple account
-                system, rate limiting, ban/unban functions and a rolling message history.
-              </p>
-              <p className="mt-3 text-zinc-400">
-                the frontend SPA is built with typescript, react, tailwind, vite
-                and bun. it is served via a self-hosted nginx instance and
-                reverse-proxied via cloudflare tunnel.
-              </p>
+              
               <p className="mt-3 text-zinc-400">
                 <a
-                  href="https://github.com/andromedatv/andromeda"
+                  href="https://github.com/chriscorbell/andromedatv"
                   target="_blank"
                   rel="noopener noreferrer"
                   aria-label="View on GitHub"

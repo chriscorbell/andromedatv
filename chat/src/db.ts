@@ -12,11 +12,15 @@ export async function initDb(dbPath: string): Promise<Database> {
     await db.exec(
         "CREATE TABLE IF NOT EXISTS users (" +
         "id INTEGER PRIMARY KEY AUTOINCREMENT," +
-        "nickname TEXT NOT NULL UNIQUE," +
+        "nickname TEXT NOT NULL COLLATE NOCASE UNIQUE," +
         "password_hash TEXT NOT NULL," +
         "created_at TEXT NOT NULL," +
         "banned INTEGER NOT NULL DEFAULT 0" +
         ");"
+    );
+
+    await db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_users_nickname_nocase ON users(nickname COLLATE NOCASE);"
     );
 
     const userColumns = await db.all<

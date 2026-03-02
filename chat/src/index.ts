@@ -11,8 +11,8 @@ import { initDb } from "./db";
 const PORT = Number(process.env.PORT || 3001);
 const JWT_SECRET = process.env.JWT_SECRET || "";
 const CORS_ORIGIN = process.env.CORS_ORIGIN || "*";
-const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "";
 const ERSATZTV_BASE_URL = process.env.ERSATZTV_BASE_URL || "";
+const ADMIN_USER = "andromedatv";
 const DB_PATH =
     process.env.DB_PATH ||
     path.resolve(__dirname, "..", "data", "chat.db");
@@ -55,12 +55,39 @@ const HOP_BY_HOP_HEADERS = new Set([
     "upgrade",
 ]);
 
+function getNicknameValidationError(value: string): string | null {
+    if (value.length < 3) {
+        return "Username must be at least 3 characters.";
+    }
+    if (value.length > 24) {
+        return "Username must be 24 characters or fewer.";
+    }
+    if (!/^[a-zA-Z0-9_-]+$/.test(value)) {
+        return "Username can only use letters, numbers, underscores, and hyphens.";
+    }
+    return null;
+}
+
 function validateNickname(value: string): boolean {
-    return /^[a-zA-Z0-9_-]{3,24}$/.test(value);
+    return getNicknameValidationError(value) === null;
+}
+
+function normalizeNickname(value: string): string {
+    return value.trim().toLowerCase();
+}
+
+function getPasswordValidationError(value: string): string | null {
+    if (value.length < 6) {
+        return "Password must be at least 6 characters.";
+    }
+    if (value.length > 72) {
+        return "Password must be 72 characters or fewer.";
+    }
+    return null;
 }
 
 function validatePassword(value: string): boolean {
-    return value.length >= 6 && value.length <= 72;
+    return getPasswordValidationError(value) === null;
 }
 
 function validateMessage(value: string): boolean {
@@ -114,17 +141,16 @@ function requireAuth(req: AuthedRequest, res: Response, next: NextFunction) {
             return res.status(401).json({ error: "Invalid token" });
         }
 
-        req.user = { nickname: payload.nickname };
+        req.user = { nickname: normalizeNickname(payload.nickname) };
         return next();
     } catch (err) {
         return res.status(401).json({ error: "Invalid token" });
     }
 }
 
-function requireAdmin(req: Request, res: Response, next: NextFunction) {
-    const token = req.header("x-admin-token") || "";
-    if (!ADMIN_TOKEN || token !== ADMIN_TOKEN) {
-        return res.status(401).json({ error: "Unauthorized" });
+function requireAdmin(req: AuthedRequest, res: Response, next: NextFunction) {
+    if (normalizeNickname(req.user?.nickname || "") !== ADMIN_USER) {
+        return res.status(403).json({ error: "Admin access required" });
     }
 
     return next();
@@ -133,7 +159,7 @@ function requireAdmin(req: Request, res: Response, next: NextFunction) {
 function getNicknameFromToken(token: string): string | null {
     try {
         const payload = jwt.verify(token, JWT_SECRET) as { nickname?: string };
-        return payload.nickname || null;
+        return payload.nickname ? normalizeNickname(payload.nickname) : null;
     } catch (err) {
         return null;
     }
@@ -360,22 +386,28 @@ async function main() {
     });
 
     chatRouter.post("/auth/register", async (req: Request, res: Response) => {
-        const nickname = String(req.body?.nickname || "").trim();
+        const rawNickname = String(req.body?.nickname || "").trim();
+        const nickname = normalizeNickname(rawNickname);
         const password = String(req.body?.password || "");
+        const nicknameError = getNicknameValidationError(rawNickname);
+        const passwordError = getPasswordValidationError(password);
 
-        if (!validateNickname(nickname)) {
-            return res.status(400).json({ error: "Invalid username" });
+        if (nicknameError) {
+            return res.status(400).json({ error: nicknameError });
         }
-        if (!validatePassword(password)) {
-            return res.status(400).json({ error: "Invalid password" });
+        if (passwordError) {
+            return res.status(400).json({ error: passwordError });
         }
 
         const existingUser = await db.get<{ banned: number }>(
-            "SELECT banned FROM users WHERE nickname = ?",
+            "SELECT banned FROM users WHERE nickname = ? COLLATE NOCASE",
             nickname
         );
         if (existingUser?.banned) {
             return res.status(403).json({ error: "this account has been banned" });
+        }
+        if (existingUser) {
+            return res.status(409).json({ error: "Username already exists" });
         }
 
         const passwordHash = await bcrypt.hash(password, 10);
@@ -400,11 +432,18 @@ async function main() {
     });
 
     chatRouter.post("/auth/login", async (req: Request, res: Response) => {
-        const nickname = String(req.body?.nickname || "").trim();
+        const rawNickname = String(req.body?.nickname || "").trim();
+        const nickname = normalizeNickname(rawNickname);
         const password = String(req.body?.password || "");
+        const nicknameError = getNicknameValidationError(rawNickname);
+        const passwordError = getPasswordValidationError(password);
 
-        if (!validateNickname(nickname) || !validatePassword(password)) {
-            return res.status(400).json({ error: "Invalid credentials" });
+        if (nicknameError) {
+            return res.status(400).json({ error: nicknameError });
+        }
+
+        if (passwordError) {
+            return res.status(400).json({ error: passwordError });
         }
 
         const user = await db.get<{
@@ -412,7 +451,9 @@ async function main() {
             password_hash: string;
             banned: number;
         }>(
-            "SELECT nickname, password_hash, banned FROM users WHERE nickname = ?",
+            "SELECT nickname, password_hash, banned FROM users WHERE nickname = ? COLLATE NOCASE " +
+            "ORDER BY CASE WHEN nickname = ? THEN 0 ELSE 1 END, id ASC LIMIT 1",
+            nickname,
             nickname
         );
 
@@ -429,14 +470,15 @@ async function main() {
             return res.status(401).json({ error: "Invalid credentials" });
         }
 
-        const token = jwt.sign({ nickname }, JWT_SECRET, { expiresIn: "7d" });
-        return res.json({ nickname, token });
+        const canonicalNickname = normalizeNickname(user.nickname);
+        const token = jwt.sign({ nickname: canonicalNickname }, JWT_SECRET, { expiresIn: "7d" });
+        return res.json({ nickname: canonicalNickname, token });
     });
 
     chatRouter.get("/messages", requireAuth, async (req: AuthedRequest, res: Response) => {
         const nickname = req.user?.nickname || "";
         const user = await db.get<{ banned: number }>(
-            "SELECT banned FROM users WHERE nickname = ?",
+            "SELECT banned FROM users WHERE nickname = ? COLLATE NOCASE",
             nickname
         );
         if (!user) {
@@ -485,7 +527,7 @@ async function main() {
         }
 
         const user = await db.get<{ banned: number }>(
-            "SELECT banned FROM users WHERE nickname = ?",
+            "SELECT banned FROM users WHERE nickname = ? COLLATE NOCASE",
             nickname
         );
         if (!user) {
@@ -549,7 +591,7 @@ async function main() {
     chatRouter.post("/messages", requireAuth, async (req: AuthedRequest, res: Response) => {
         const nickname = req.user?.nickname || "";
         const user = await db.get<{ banned: number }>(
-            "SELECT banned FROM users WHERE nickname = ?",
+            "SELECT banned FROM users WHERE nickname = ? COLLATE NOCASE",
             nickname
         );
         if (!user) {
@@ -607,7 +649,7 @@ async function main() {
         return res.status(201).json({ message });
     });
 
-    chatRouter.post("/admin/clear", requireAdmin, async (_req: Request, res: Response) => {
+    chatRouter.post("/admin/clear", requireAuth, requireAdmin, async (_req: Request, res: Response) => {
         await db.run("DELETE FROM messages");
 
         for (const client of streamClients) {
@@ -619,6 +661,7 @@ async function main() {
 
     chatRouter.post(
         "/admin/messages/:id/delete",
+        requireAuth,
         requireAdmin,
         async (req: Request, res: Response) => {
             const messageId = Number(req.params.id);
@@ -647,6 +690,7 @@ async function main() {
 
     chatRouter.post(
         "/admin/messages/:id/warn",
+        requireAuth,
         requireAdmin,
         async (req: Request, res: Response) => {
             const messageId = Number(req.params.id);
@@ -682,16 +726,18 @@ async function main() {
 
     chatRouter.post(
         "/admin/users/:nickname/ban",
+        requireAuth,
         requireAdmin,
         async (req: Request, res: Response) => {
-            const nickname = String(req.params.nickname || "").trim();
-            if (!validateNickname(nickname)) {
+            const rawNickname = String(req.params.nickname || "").trim();
+            const nickname = normalizeNickname(rawNickname);
+            if (!validateNickname(rawNickname)) {
                 return res.status(400).json({ error: "Invalid username" });
             }
 
-            await db.run("UPDATE users SET banned = 1 WHERE nickname = ?", nickname);
+            await db.run("UPDATE users SET banned = 1 WHERE nickname = ? COLLATE NOCASE", nickname);
             await db.run(
-                "UPDATE messages SET body = ? WHERE nickname = ?",
+                "UPDATE messages SET body = ? WHERE nickname = ? COLLATE NOCASE",
                 "message deleted",
                 nickname
             );
@@ -727,6 +773,7 @@ async function main() {
 
     chatRouter.get(
         "/admin/users/active",
+        requireAuth,
         requireAdmin,
         async (_req: Request, res: Response) => {
             const rows = await db.all<Array<{ nickname: string; created_at: string }>>(
@@ -738,6 +785,7 @@ async function main() {
 
     chatRouter.get(
         "/admin/users/banned",
+        requireAuth,
         requireAdmin,
         async (_req: Request, res: Response) => {
             const rows = await db.all<Array<{ nickname: string; created_at: string }>>(
@@ -749,22 +797,24 @@ async function main() {
 
     chatRouter.post(
         "/admin/users/:nickname/unban",
+        requireAuth,
         requireAdmin,
         async (req: Request, res: Response) => {
-            const nickname = String(req.params.nickname || "").trim();
-            if (!validateNickname(nickname)) {
+            const rawNickname = String(req.params.nickname || "").trim();
+            const nickname = normalizeNickname(rawNickname);
+            if (!validateNickname(rawNickname)) {
                 return res.status(400).json({ error: "Invalid username" });
             }
 
             const user = await db.get<{ banned: number }>(
-                "SELECT banned FROM users WHERE nickname = ?",
+                "SELECT banned FROM users WHERE nickname = ? COLLATE NOCASE",
                 nickname
             );
             if (!user) {
                 return res.status(404).json({ error: "User not found" });
             }
 
-            await db.run("UPDATE users SET banned = 0 WHERE nickname = ?", nickname);
+            await db.run("UPDATE users SET banned = 0 WHERE nickname = ? COLLATE NOCASE", nickname);
 
             const createdAt = new Date().toISOString();
             const logResult = await db.run(
@@ -795,15 +845,17 @@ async function main() {
 
     chatRouter.delete(
         "/admin/users/:nickname",
+        requireAuth,
         requireAdmin,
         async (req: Request, res: Response) => {
-            const nickname = String(req.params.nickname || "").trim();
-            if (!validateNickname(nickname)) {
+            const rawNickname = String(req.params.nickname || "").trim();
+            const nickname = normalizeNickname(rawNickname);
+            if (!validateNickname(rawNickname)) {
                 return res.status(400).json({ error: "Invalid username" });
             }
 
-            await db.run("DELETE FROM messages WHERE nickname = ?", nickname);
-            await db.run("DELETE FROM users WHERE nickname = ?", nickname);
+            await db.run("DELETE FROM messages WHERE nickname = ? COLLATE NOCASE", nickname);
+            await db.run("DELETE FROM users WHERE nickname = ? COLLATE NOCASE", nickname);
 
             for (const client of streamClients) {
                 writeSseEvent(client.res, "purge", { nickname });

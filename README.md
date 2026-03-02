@@ -6,7 +6,7 @@ This is a single-page livestream webapp with schedule + chat, deployable as a si
 
 ### Stack
 
-React + TypeScript + Vite
+Typescript + React + Vite + TailwindCSS + Bun
 
 ### Runtime routing
 
@@ -46,8 +46,6 @@ In a dedicated directory, create `.env` from `.env.example` and set:
 
 ```
 JWT_SECRET=replace_me # Required - replace this with a random string of at least 32 characters
-
-ADMIN_TOKEN=replace_me # Required - replace this with a secure token
 
 ERSATZTV_BASE_URL=http://your-ersatztv-host:8409 # Required - replace this with your ErsatzTV host URL
 

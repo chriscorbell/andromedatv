@@ -22,7 +22,8 @@ Simple chat backend with nickname/password auth and a 100-message history cap.
   - returns: { "message": { id, nickname, body, created_at } }
 
 - POST /admin/clear
-  - header: X-Admin-Token: <token>
+  - header: Authorization: Bearer <token>
+  - note: token must belong to admin user `andromedatv`
   - returns: { "ok": true }
 
 ## Notes
