@@ -226,6 +226,10 @@ function App() {
 
     video.muted = isMuted
     video.volume = volume
+    const supportsNativeHls = Boolean(
+      video.canPlayType('application/vnd.apple.mpegurl'),
+    )
+    const canUseHlsJs = Hls.isSupported()
 
     const clearRestartTimer = () => {
       if (hlsRestartTimeoutRef.current) {
@@ -251,8 +255,34 @@ function App() {
 
     let recoveryInProgress = false
     let playbackWatchdog: number | null = null
+    let startupRestartTimeout: number | null = null
     let lastPlaybackTime = 0
     let stalledChecks = 0
+    let manifestLoaded = false
+    let playbackStarted = false
+
+    const clearStartupRestartTimer = () => {
+      if (startupRestartTimeout) {
+        window.clearTimeout(startupRestartTimeout)
+        startupRestartTimeout = null
+      }
+    }
+
+    const getStreamUrl = () =>
+      `${HLS_URL}${HLS_URL.includes('?') ? '&' : '?'}ts=${Date.now()}`
+
+    const scheduleStartupRestart = (delay = 12_000) => {
+      if (!supportsNativeHls && !canUseHlsJs) {
+        return
+      }
+
+      clearStartupRestartTimer()
+      startupRestartTimeout = window.setTimeout(() => {
+        if (!playbackStarted) {
+          restartStream(0)
+        }
+      }, delay)
+    }
 
     const schedulePlaybackRetry = (delay = 750) => {
       clearPlaybackRetryTimer()
@@ -271,6 +301,7 @@ function App() {
     }
 
     const handleReady = () => {
+      manifestLoaded = true
       stalledChecks = 0
       lastPlaybackTime = video.currentTime
 
@@ -283,31 +314,74 @@ function App() {
     }
 
     const handlePlaying = () => {
+      playbackStarted = true
+      manifestLoaded = true
       stalledChecks = 0
       lastPlaybackTime = video.currentTime
       clearPlaybackRetryTimer()
+      clearStartupRestartTimer()
+    }
+
+    const restartStream = (delay = 1500) => {
+      clearRestartTimer()
+      clearStartupRestartTimer()
+      hlsRestartTimeoutRef.current = window.setTimeout(() => {
+        if (supportsNativeHls) {
+          startNativeStream()
+          return
+        }
+
+        if (canUseHlsJs) {
+          startHls()
+        }
+      }, delay)
+    }
+
+    const startNativeStream = () => {
+      playbackStarted = false
+      manifestLoaded = false
+      clearRestartTimer()
+      clearStartupRestartTimer()
+      destroyHls()
+      video.pause()
+      video.src = getStreamUrl()
+      video.load()
+      schedulePlaybackRetry(0)
+      scheduleStartupRestart()
     }
 
     const startHls = () => {
-      clearRestartTimer()
+      playbackStarted = false
+      manifestLoaded = false
+      clearStartupRestartTimer()
       destroyHls()
 
       const hls = new Hls({
         enableWorker: true,
         lowLatencyMode: false,
+        manifestLoadingTimeOut: 20_000,
+        manifestLoadingMaxRetry: 6,
+        manifestLoadingRetryDelay: 1500,
+        levelLoadingTimeOut: 20_000,
+        levelLoadingMaxRetry: 6,
+        levelLoadingRetryDelay: 1500,
+        fragLoadingTimeOut: 20_000,
       })
 
       hlsRef.current = hls
 
       hls.on(Hls.Events.MEDIA_ATTACHED, () => {
-        hls.loadSource(HLS_URL)
+        hls.loadSource(getStreamUrl())
+        scheduleStartupRestart()
       })
 
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        manifestLoaded = true
         schedulePlaybackRetry(0)
       })
 
       hls.on(Hls.Events.LEVEL_LOADED, () => {
+        manifestLoaded = true
         if (video.paused) {
           schedulePlaybackRetry(0)
         }
@@ -319,13 +393,27 @@ function App() {
         }
 
         if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+          if (
+            !playbackStarted ||
+            data.details === Hls.ErrorDetails.MANIFEST_LOAD_ERROR ||
+            data.details === Hls.ErrorDetails.MANIFEST_LOAD_TIMEOUT ||
+            data.details === Hls.ErrorDetails.LEVEL_EMPTY_ERROR ||
+            data.details === Hls.ErrorDetails.LEVEL_LOAD_ERROR ||
+            data.details === Hls.ErrorDetails.LEVEL_LOAD_TIMEOUT
+          ) {
+            restartStream(1500)
+            return
+          }
+
           hls.startLoad()
           schedulePlaybackRetry(500)
+          scheduleStartupRestart(8000)
           return
         }
 
         if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
-          if (recoveryInProgress) {
+          if (recoveryInProgress || !manifestLoaded) {
+            restartStream(1500)
             return
           }
 
@@ -338,10 +426,7 @@ function App() {
           return
         }
 
-        hlsRestartTimeoutRef.current = window.setTimeout(() => {
-          startHls()
-          schedulePlaybackRetry(250)
-        }, 500)
+        restartStream(1500)
       })
 
       hls.attachMedia(video)
@@ -358,6 +443,15 @@ function App() {
       nudgePlayback()
     }
 
+    const handleVideoError = () => {
+      if (!playbackStarted) {
+        restartStream(1500)
+        return
+      }
+
+      nudgePlayback()
+    }
+
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible' && video.paused) {
         nudgePlayback()
@@ -367,26 +461,27 @@ function App() {
     video.addEventListener('loadedmetadata', handleReady)
     video.addEventListener('canplay', handleReady)
     video.addEventListener('playing', handlePlaying)
+    video.addEventListener('error', handleVideoError)
     video.addEventListener('waiting', handleWaiting)
     video.addEventListener('stalled', handleWaiting)
     document.addEventListener('visibilitychange', handleVisibilityChange)
 
-    if (video.canPlayType('application/vnd.apple.mpegurl')) {
-      video.src = HLS_URL
-      video.load()
-      schedulePlaybackRetry(0)
-    } else if (Hls.isSupported()) {
+    if (supportsNativeHls) {
+      startNativeStream()
+    } else if (canUseHlsJs) {
       startHls()
     } else {
       return () => {
         video.removeEventListener('loadedmetadata', handleReady)
         video.removeEventListener('canplay', handleReady)
         video.removeEventListener('playing', handlePlaying)
+        video.removeEventListener('error', handleVideoError)
         video.removeEventListener('waiting', handleWaiting)
         video.removeEventListener('stalled', handleWaiting)
         document.removeEventListener('visibilitychange', handleVisibilityChange)
         clearRestartTimer()
         clearPlaybackRetryTimer()
+        clearStartupRestartTimer()
         destroyHls()
       }
     }
@@ -426,6 +521,7 @@ function App() {
       video.removeEventListener('loadedmetadata', handleReady)
       video.removeEventListener('canplay', handleReady)
       video.removeEventListener('playing', handlePlaying)
+      video.removeEventListener('error', handleVideoError)
       video.removeEventListener('waiting', handleWaiting)
       video.removeEventListener('stalled', handleWaiting)
       document.removeEventListener('visibilitychange', handleVisibilityChange)
@@ -434,6 +530,7 @@ function App() {
       }
       clearRestartTimer()
       clearPlaybackRetryTimer()
+      clearStartupRestartTimer()
       destroyHls()
       video.removeAttribute('src')
       video.load()
