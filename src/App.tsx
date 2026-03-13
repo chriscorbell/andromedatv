@@ -157,6 +157,7 @@ function App() {
   const videoFrameRef = useRef<HTMLDivElement | null>(null)
   const hlsRef = useRef<Hls | null>(null)
   const hlsRestartTimeoutRef = useRef<number | null>(null)
+  const playbackRetryTimeoutRef = useRef<number | null>(null)
   const chatScrollRef = useRef<HTMLDivElement | null>(null)
   const chatInputRef = useRef<HTMLTextAreaElement | null>(null)
   const chatStreamRef = useRef<EventSource | null>(null)
@@ -233,6 +234,13 @@ function App() {
       }
     }
 
+    const clearPlaybackRetryTimer = () => {
+      if (playbackRetryTimeoutRef.current) {
+        window.clearTimeout(playbackRetryTimeoutRef.current)
+        playbackRetryTimeoutRef.current = null
+      }
+    }
+
     const destroyHls = () => {
       if (!hlsRef.current) {
         return
@@ -241,20 +249,44 @@ function App() {
       hlsRef.current = null
     }
 
-    if (video.canPlayType('application/vnd.apple.mpegurl')) {
-      video.src = HLS_URL
-      void video.play().catch(() => {})
-      return
-    }
-
-    if (!Hls.isSupported()) {
-      return
-    }
-
     let recoveryInProgress = false
     let playbackWatchdog: number | null = null
     let lastPlaybackTime = 0
     let stalledChecks = 0
+
+    const schedulePlaybackRetry = (delay = 750) => {
+      clearPlaybackRetryTimer()
+      playbackRetryTimeoutRef.current = window.setTimeout(() => {
+        const playAttempt = video.play()
+        if (!playAttempt) {
+          return
+        }
+
+        void playAttempt.catch(() => {
+          if (document.visibilityState === 'visible' && !video.ended) {
+            schedulePlaybackRetry(1000)
+          }
+        })
+      }, delay)
+    }
+
+    const handleReady = () => {
+      stalledChecks = 0
+      lastPlaybackTime = video.currentTime
+
+      if (video.paused) {
+        schedulePlaybackRetry(0)
+        return
+      }
+
+      clearPlaybackRetryTimer()
+    }
+
+    const handlePlaying = () => {
+      stalledChecks = 0
+      lastPlaybackTime = video.currentTime
+      clearPlaybackRetryTimer()
+    }
 
     const startHls = () => {
       clearRestartTimer()
@@ -262,13 +294,23 @@ function App() {
 
       const hls = new Hls({
         enableWorker: true,
-        lowLatencyMode: true,
+        lowLatencyMode: false,
       })
 
       hlsRef.current = hls
 
       hls.on(Hls.Events.MEDIA_ATTACHED, () => {
         hls.loadSource(HLS_URL)
+      })
+
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        schedulePlaybackRetry(0)
+      })
+
+      hls.on(Hls.Events.LEVEL_LOADED, () => {
+        if (video.paused) {
+          schedulePlaybackRetry(0)
+        }
       })
 
       hls.on(Hls.Events.ERROR, (_event, data) => {
@@ -278,6 +320,7 @@ function App() {
 
         if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
           hls.startLoad()
+          schedulePlaybackRetry(500)
           return
         }
 
@@ -288,6 +331,7 @@ function App() {
 
           recoveryInProgress = true
           hls.recoverMediaError()
+          schedulePlaybackRetry(250)
           window.setTimeout(() => {
             recoveryInProgress = false
           }, 1500)
@@ -296,6 +340,7 @@ function App() {
 
         hlsRestartTimeoutRef.current = window.setTimeout(() => {
           startHls()
+          schedulePlaybackRetry(250)
         }, 500)
       })
 
@@ -306,21 +351,59 @@ function App() {
       if (hlsRef.current) {
         hlsRef.current.startLoad()
       }
-      void video.play().catch(() => {})
+      schedulePlaybackRetry(0)
     }
 
     const handleWaiting = () => {
       nudgePlayback()
     }
 
-    startHls()
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && video.paused) {
+        nudgePlayback()
+      }
+    }
+
+    video.addEventListener('loadedmetadata', handleReady)
+    video.addEventListener('canplay', handleReady)
+    video.addEventListener('playing', handlePlaying)
     video.addEventListener('waiting', handleWaiting)
     video.addEventListener('stalled', handleWaiting)
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+
+    if (video.canPlayType('application/vnd.apple.mpegurl')) {
+      video.src = HLS_URL
+      video.load()
+      schedulePlaybackRetry(0)
+    } else if (Hls.isSupported()) {
+      startHls()
+    } else {
+      return () => {
+        video.removeEventListener('loadedmetadata', handleReady)
+        video.removeEventListener('canplay', handleReady)
+        video.removeEventListener('playing', handlePlaying)
+        video.removeEventListener('waiting', handleWaiting)
+        video.removeEventListener('stalled', handleWaiting)
+        document.removeEventListener('visibilitychange', handleVisibilityChange)
+        clearRestartTimer()
+        clearPlaybackRetryTimer()
+        destroyHls()
+      }
+    }
 
     playbackWatchdog = window.setInterval(() => {
-      if (video.paused || video.ended) {
+      if (video.ended) {
         lastPlaybackTime = video.currentTime
         stalledChecks = 0
+        return
+      }
+
+      if (video.paused) {
+        lastPlaybackTime = video.currentTime
+        stalledChecks = 0
+        if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+          schedulePlaybackRetry(0)
+        }
         return
       }
 
@@ -340,13 +423,20 @@ function App() {
     }, 10_000)
 
     return () => {
+      video.removeEventListener('loadedmetadata', handleReady)
+      video.removeEventListener('canplay', handleReady)
+      video.removeEventListener('playing', handlePlaying)
       video.removeEventListener('waiting', handleWaiting)
       video.removeEventListener('stalled', handleWaiting)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
       if (playbackWatchdog) {
         window.clearInterval(playbackWatchdog)
       }
       clearRestartTimer()
+      clearPlaybackRetryTimer()
       destroyHls()
+      video.removeAttribute('src')
+      video.load()
     }
   }, [])
 
@@ -1561,6 +1651,7 @@ function App() {
                 className="absolute inset-0 h-full w-full object-contain"
                 muted
                 autoPlay
+                preload="auto"
                 playsInline
                 onContextMenu={(event) => event.preventDefault()}
               />

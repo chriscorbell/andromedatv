@@ -220,7 +220,14 @@ function rewritePlaylistBody(content: string, publicOrigin: string): string {
     if (!publicOrigin) {
         return content;
     }
-    return content.replace(/http:\/\/[^\s"'#]+\/iptv\//g, `${publicOrigin}/iptv/`);
+    return content.replace(/https?:\/\/[^\s"'#]+\/iptv\//g, `${publicOrigin}/iptv/`);
+}
+
+function setNoCacheHeaders(res: Response) {
+    res.setHeader("cache-control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+    res.setHeader("pragma", "no-cache");
+    res.setHeader("expires", "0");
+    res.setHeader("surrogate-control", "no-store");
 }
 
 function copyUpstreamHeaders(
@@ -336,6 +343,7 @@ async function main() {
                             );
                             res.status(proxyRes.statusCode || 502);
                             copyUpstreamHeaders(proxyRes.headers, res, true);
+                            setNoCacheHeaders(res);
                             res.setHeader("content-length", Buffer.byteLength(rewritten, "utf8"));
                             res.send(rewritten);
                         } catch (err) {
