@@ -45,6 +45,9 @@ jobs:
       - name: Lint frontend
         run: bun run lint
 
+      - name: Run server tests
+        run: npm --prefix server test
+
       - name: Build frontend
         run: bun run build
 
