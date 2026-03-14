@@ -15,7 +15,8 @@ export async function initDb(dbPath: string): Promise<Database> {
         "nickname TEXT NOT NULL COLLATE NOCASE UNIQUE," +
         "password_hash TEXT NOT NULL," +
         "created_at TEXT NOT NULL," +
-        "banned INTEGER NOT NULL DEFAULT 0" +
+        "banned INTEGER NOT NULL DEFAULT 0," +
+        "is_admin INTEGER NOT NULL DEFAULT 0" +
         ");"
     );
 
@@ -30,6 +31,13 @@ export async function initDb(dbPath: string): Promise<Database> {
     if (!hasBannedColumn) {
         await db.exec(
             "ALTER TABLE users ADD COLUMN banned INTEGER NOT NULL DEFAULT 0"
+        );
+    }
+
+    const hasIsAdminColumn = userColumns.some((column) => column.name === "is_admin");
+    if (!hasIsAdminColumn) {
+        await db.exec(
+            "ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0"
         );
     }
 

@@ -45,12 +45,21 @@ Node + Express + SQLite
 In a dedicated directory, create `.env` from `.env.example` and set:
 
 ```
-JWT_SECRET=replace_me # Required - replace this with a random string of at least 32 characters
-
 ERSATZTV_BASE_URL=http://your-ersatztv-host:8409 # Required - replace this with your ErsatzTV host URL
 
+INITIAL_ADMIN_NICKNAME=andromedatv # Required - bootstraps the first admin if none exists
+
+INITIAL_ADMIN_PASSWORD=replace_me # Required - must be set together with INITIAL_ADMIN_NICKNAME
+
 CORS_ORIGIN=https://yourdomain.com # Optional - default is "*"
+
+JWT_SECRET=replace_me # Optional - if omitted, the app will generate and persist one under /data
+
 ```
+
+The admin bootstrap only runs when there are no admin users in the database. After the first admin exists, those variables are ignored unless you reset the chat DB.
+
+If `JWT_SECRET` is omitted, the app writes a generated secret to `/data/jwt-secret` on first boot and reuses it on later starts. Keep the `/data` volume persistent so chat sessions remain valid across restarts.
 
 ### 2) Start
 
@@ -67,7 +76,7 @@ services:
     env_file:
       - .env
     volumes:
-      - ./chat-data:/data
+      - ./data:/data
 ```
 
 Then run:

@@ -79,23 +79,82 @@ button:disabled {
 }
 
 .clock {
+  display: inline-flex;
+  align-items: center;
   white-space: pre;
   font-variant-numeric: tabular-nums;
+  contain: layout paint;
+  isolation: isolate;
 }
 
-.clock-digit {
+.clock-literal {
   display: inline-block;
-  animation: clockTick 180ms ease-out;
 }
 
-@keyframes clockTick {
+.clock-day-period {
+  display: inline-block;
+}
+
+.clock-part {
+  display: inline-flex;
+  justify-content: flex-end;
+}
+
+.clock-part[data-type='hour'] {
+  min-width: 2ch;
+}
+
+.clock-slot {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1ch;
+  height: 1em;
+  overflow: hidden;
+  contain: paint;
+}
+
+.clock-char {
+  display: block;
+  line-height: 1;
+  backface-visibility: hidden;
+}
+
+.clock-char-previous,
+.clock-char-next {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  will-change: transform;
+}
+
+.clock-slot[data-animating='true'] .clock-char-previous {
+  animation: clockCharOut 220ms cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+}
+
+.clock-slot[data-animating='true'] .clock-char-next {
+  animation: clockCharIn 220ms cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+}
+
+@keyframes clockCharOut {
   from {
-    opacity: 0.5;
-    transform: translateY(2px);
+    transform: translateY(0);
   }
 
   to {
-    opacity: 1;
+    transform: translateY(-110%);
+  }
+}
+
+@keyframes clockCharIn {
+  from {
+    transform: translateY(110%);
+  }
+
+  to {
     transform: translateY(0);
   }
 }

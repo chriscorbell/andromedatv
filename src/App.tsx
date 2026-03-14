@@ -5,7 +5,19 @@ import andromedaIcon from './assets/andromeda.png'
 const HLS_URL = '/iptv/session/1/hls.m3u8'
 const CHAT_API_URL = '/chat'
 const CHAT_STORAGE_KEY = 'andromeda-chat-auth'
-const ADMIN_USER = 'andromedatv'
+const CLOCK_TIME_FORMAT: Intl.DateTimeFormatOptions = {
+  hour12: true,
+  hour: 'numeric',
+  minute: '2-digit',
+  second: '2-digit',
+}
+const CLOCK_ANIMATION_MS = 220
+const clockFormatter = new Intl.DateTimeFormat(undefined, CLOCK_TIME_FORMAT)
+
+type ClockPart = {
+  type: Intl.DateTimeFormatPartTypes
+  value: string
+}
 
 type ScheduleItem = {
   title: string
@@ -22,6 +34,7 @@ type ChatMessage = {
   nickname: string
   body: string
   created_at: string
+  is_admin?: boolean
 }
 
 type AdminAction =
@@ -152,6 +165,157 @@ const parseEpisodePrefix = (program: Element) => {
   return undefined
 }
 
+const getClockParts = (date: Date) =>
+  clockFormatter
+    .formatToParts(date)
+    .filter(
+      (part) =>
+        part.type === 'hour' ||
+        part.type === 'minute' ||
+        part.type === 'second' ||
+        part.type === 'dayPeriod' ||
+        part.type === 'literal',
+    )
+
+const areClockPartsEqual = (left: ClockPart[], right: ClockPart[]) =>
+  left.length === right.length &&
+  left.every(
+    (part, index) =>
+      part.type === right[index]?.type && part.value === right[index]?.value,
+  )
+
+const isAnimatedClockPartType = (
+  type: Intl.DateTimeFormatPartTypes,
+): type is 'hour' | 'minute' | 'second' =>
+  type === 'hour' || type === 'minute' || type === 'second'
+
+function AnimatedClockPart({
+  type,
+  value,
+  previousValue,
+}: {
+  type: 'hour' | 'minute' | 'second'
+  value: string
+  previousValue?: string
+}) {
+  const width = type === 'hour' ? 2 : value.length
+  const paddedValue = value.padStart(width, ' ')
+  const paddedPreviousValue = previousValue?.padStart(width, ' ')
+  const nextChars = Array.from(paddedValue)
+  const previousChars = paddedPreviousValue
+    ? Array.from(paddedPreviousValue)
+    : undefined
+
+  return (
+    <span className="clock-part" data-type={type}>
+      {nextChars.map((char, index) => {
+        const previousChar = previousChars?.[index]
+        const isAnimating = previousChar !== undefined && previousChar !== char
+        const displayChar = char === ' ' ? '\u00A0' : char
+        const previousDisplayChar =
+          previousChar === ' ' ? '\u00A0' : previousChar
+
+        return (
+          <span
+            key={`${type}-${index}`}
+            className="clock-slot"
+            data-animating={isAnimating}
+          >
+            {isAnimating ? (
+              <>
+                <span className="clock-char clock-char-previous" aria-hidden="true">
+                  {previousDisplayChar}
+                </span>
+                <span className="clock-char clock-char-next">{displayChar}</span>
+              </>
+            ) : (
+              <span className="clock-char">{displayChar}</span>
+            )}
+          </span>
+        )
+      })}
+    </span>
+  )
+}
+
+function ScheduleClock() {
+  const [clockParts, setClockParts] = useState<ClockPart[]>(() =>
+    getClockParts(new Date()),
+  )
+  const [previousClockParts, setPreviousClockParts] = useState<ClockPart[] | null>(
+    null,
+  )
+  const animationTimeoutRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const nextClockParts = getClockParts(new Date())
+
+      setClockParts((currentClockParts) => {
+        if (areClockPartsEqual(currentClockParts, nextClockParts)) {
+          return currentClockParts
+        }
+
+        if (animationTimeoutRef.current) {
+          window.clearTimeout(animationTimeoutRef.current)
+        }
+
+        setPreviousClockParts(currentClockParts)
+        animationTimeoutRef.current = window.setTimeout(() => {
+          setPreviousClockParts(null)
+          animationTimeoutRef.current = null
+        }, CLOCK_ANIMATION_MS)
+
+        return nextClockParts
+      })
+    }, 1000)
+
+    return () => {
+      window.clearInterval(timer)
+      if (animationTimeoutRef.current) {
+        window.clearTimeout(animationTimeoutRef.current)
+      }
+    }
+  }, [])
+
+  const clockLabel = clockParts.map((part) => part.value).join('')
+
+  return (
+    <span className="clock ml-auto text-zinc-500" aria-label={clockLabel}>
+      {clockParts.map((part, index) =>
+        part.type === 'literal' ? (
+          <span
+            key={`literal-${index}`}
+            className="clock-literal"
+            aria-hidden="true"
+          >
+            {part.value}
+          </span>
+        ) : part.type === 'dayPeriod' ? (
+          <span
+            key={`day-period-${index}`}
+            className="clock-day-period"
+            aria-hidden="true"
+          >
+            {part.value}
+          </span>
+        ) : isAnimatedClockPartType(part.type) ? (
+          <AnimatedClockPart
+            key={`${part.type}-${index}`}
+            type={part.type}
+            value={part.value}
+            previousValue={
+              previousClockParts?.[index]?.type === part.type
+                ? previousClockParts[index].value
+                : undefined
+            }
+          />
+        ) : null,
+      )}
+    </span>
+  )
+}
+
 function App() {
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const videoFrameRef = useRef<HTMLDivElement | null>(null)
@@ -161,7 +325,6 @@ function App() {
   const chatScrollRef = useRef<HTMLDivElement | null>(null)
   const chatInputRef = useRef<HTMLTextAreaElement | null>(null)
   const chatStreamRef = useRef<EventSource | null>(null)
-  const [nowTime, setNowTime] = useState(() => new Date())
   const [infoOpen, setInfoOpen] = useState(false)
   const [infoVisible, setInfoVisible] = useState(false)
   const [infoActive, setInfoActive] = useState(false)
@@ -180,6 +343,7 @@ function App() {
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login')
   const [authToken, setAuthToken] = useState<string | null>(null)
   const [authNickname, setAuthNickname] = useState<string | null>(null)
+  const [authIsAdmin, setAuthIsAdmin] = useState(false)
   const [authNicknameInput, setAuthNicknameInput] = useState('')
   const [authPasswordInput, setAuthPasswordInput] = useState('')
   const [authError, setAuthError] = useState<string | null>(null)
@@ -734,23 +898,18 @@ function App() {
     }
 
     try {
-      const stored = JSON.parse(raw) as { nickname?: string; token?: string }
+      const stored = JSON.parse(raw) as {
+        nickname?: string
+        token?: string
+        isAdmin?: boolean
+      }
       if (stored?.token && stored?.nickname) {
         setAuthToken(stored.token)
         setAuthNickname(stored.nickname)
+        setAuthIsAdmin(Boolean(stored.isAdmin))
       }
     } catch (error) {
       console.warn('Failed to read stored chat auth', error)
-    }
-  }, [])
-
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      setNowTime(new Date())
-    }, 1000)
-
-    return () => {
-      window.clearInterval(timer)
     }
   }, [])
 
@@ -923,9 +1082,10 @@ function App() {
   }, [adminMenuOpen, adminMenuVisible])
 
 
-  const clearAuth = () => {
+  const clearAuth = (notifyServer = true) => {
     setAuthToken(null)
     setAuthNickname(null)
+    setAuthIsAdmin(false)
     setAuthNicknameInput('')
     setAuthPasswordInput('')
     setAuthError(null)
@@ -935,11 +1095,129 @@ function App() {
       chatStreamRef.current = null
     }
     window.localStorage.removeItem(CHAT_STORAGE_KEY)
+    if (notifyServer) {
+      void fetch(`${CHAT_API_URL}/auth/logout`, {
+        method: 'POST',
+      }).catch((error) => {
+        console.warn('Failed to clear chat session cookie', error)
+      })
+    }
+  }
+
+  const appendChatMessage = (message: ChatMessage) => {
+    setChatMessages((prev) => {
+      if (prev.some((entry) => entry.id === message.id)) {
+        return prev
+      }
+      const next = [...prev, message]
+      return next.length > 100 ? next.slice(-100) : next
+    })
+  }
+
+  const markDeletedMessage = (messageId: number) => {
+    setChatMessages((prev) =>
+      prev.map((entry) =>
+        entry.id === messageId
+          ? { ...entry, body: 'message deleted' }
+          : entry,
+      ),
+    )
+  }
+
+  const purgeNicknameMessages = (nickname: string) => {
+    setChatMessages((prev) =>
+      prev.map((entry) =>
+        entry.nickname === nickname
+          ? { ...entry, body: 'message deleted' }
+          : entry,
+      ),
+    )
+  }
+
+  const attachChatStreamHandlers = (
+    stream: EventSource,
+    options: {
+      includePrivateEvents: boolean
+      viewerNickname: string | null
+    },
+  ) => {
+    stream.addEventListener('ready', () => {
+      setChatError(null)
+    })
+
+    stream.addEventListener('message', (event) => {
+      try {
+        const message = JSON.parse(event.data) as ChatMessage
+        appendChatMessage(message)
+        setChatError(null)
+      } catch (error) {
+        console.warn('Failed to parse chat message', error)
+      }
+    })
+
+    stream.addEventListener('clear', () => {
+      setChatMessages([])
+    })
+
+    stream.addEventListener('delete', (event) => {
+      try {
+        const payload = JSON.parse(event.data) as { id?: number }
+        if (!payload.id) {
+          return
+        }
+        markDeletedMessage(payload.id)
+      } catch (error) {
+        console.warn('Failed to parse delete event', error)
+      }
+    })
+
+    stream.addEventListener('purge', (event) => {
+      try {
+        const payload = JSON.parse(event.data) as { nickname?: string }
+        if (!payload.nickname) {
+          return
+        }
+        purgeNicknameMessages(payload.nickname)
+      } catch (error) {
+        console.warn('Failed to parse purge event', error)
+      }
+    })
+
+    if (options.includePrivateEvents) {
+      stream.addEventListener('warn', (event) => {
+        try {
+          const payload = JSON.parse(event.data) as { nickname?: string }
+          if (!payload.nickname || payload.nickname !== options.viewerNickname) {
+            return
+          }
+          setChatNotice('you have been warned for your previous message')
+        } catch (error) {
+          console.warn('Failed to parse warn event', error)
+        }
+      })
+
+      stream.addEventListener('ban', (event) => {
+        try {
+          const payload = JSON.parse(event.data) as { nickname?: string }
+          if (!payload.nickname || payload.nickname !== options.viewerNickname) {
+            return
+          }
+          clearAuth()
+          setChatError('your account has been banned')
+        } catch (error) {
+          console.warn('Failed to parse ban event', error)
+        }
+      })
+    }
+
+    stream.addEventListener('error', () => {
+      setChatError('Chat connection lost. Reconnecting...')
+    })
   }
 
   const fetchMessages = async () => {
     if (!authToken) {
-      return
+      return false
     }
 
     setChatLoading(true)
@@ -954,18 +1232,43 @@ function App() {
 
       if (response.status === 401) {
         clearAuth()
-        return
+        return false
+      }
+      if (response.status === 403) {
+        clearAuth()
+        setChatError('your account has been banned')
+        return false
       }
 
       if (!response.ok) {
         throw new Error('Failed to load messages')
       }
 
-      const payload = (await response.json()) as { messages: ChatMessage[] }
+      const payload = (await response.json()) as {
+        messages: ChatMessage[]
+        user?: {
+          nickname: string
+          isAdmin: boolean
+        }
+      }
       setChatMessages(payload.messages)
+      if (payload.user) {
+        setAuthNickname(payload.user.nickname)
+        setAuthIsAdmin(payload.user.isAdmin)
+        window.localStorage.setItem(
+          CHAT_STORAGE_KEY,
+          JSON.stringify({
+            nickname: payload.user.nickname,
+            token: authToken,
+            isAdmin: payload.user.isAdmin,
+          }),
+        )
+      }
+      return true
     } catch (error) {
       console.warn('Failed to load chat messages', error)
       setChatError('Unable to load messages. Try again in a moment.')
+      return false
     } finally {
       setChatLoading(false)
     }
@@ -1004,96 +1307,9 @@ function App() {
       )
       const publicStream = new EventSource(publicStreamUrl.toString())
       chatStreamRef.current = publicStream
-
-      publicStream.addEventListener('ready', () => {
-        setChatError(null)
-      })
-
-      publicStream.addEventListener('message', (event) => {
-        try {
-          const message = JSON.parse(event.data) as ChatMessage
-          setChatMessages((prev) => {
-            if (prev.some((entry) => entry.id === message.id)) {
-              return prev
-            }
-            const next = [...prev, message]
-            return next.length > 100 ? next.slice(-100) : next
-          })
-          setChatError(null)
-        } catch (error) {
-          console.warn('Failed to parse chat message', error)
-        }
-      })
-
-      publicStream.addEventListener('clear', () => {
-        setChatMessages([])
-      })
-
-      publicStream.addEventListener('delete', (event) => {
-        try {
-          const payload = JSON.parse(event.data) as { id?: number }
-          if (!payload.id) {
-            return
-          }
-          setChatMessages((prev) =>
-            prev.map((entry) =>
-              entry.id === payload.id
-                ? { ...entry, body: 'message deleted' }
-                : entry,
-            ),
-          )
-        } catch (error) {
-          console.warn('Failed to parse delete event', error)
-        }
-      })
-
-      publicStream.addEventListener('purge', (event) => {
-        try {
-          const payload = JSON.parse(event.data) as { nickname?: string }
-          if (!payload.nickname) {
-            return
-          }
-          setChatMessages((prev) =>
-            prev.map((entry) =>
-              entry.nickname === payload.nickname
-                ? { ...entry, body: 'message deleted' }
-                : entry,
-            ),
-          )
-        } catch (error) {
-          console.warn('Failed to parse purge event', error)
-        }
-      })
-
-      publicStream.addEventListener('warn', (event) => {
-        try {
-          const payload = JSON.parse(event.data) as { nickname?: string }
-          if (!payload.nickname || payload.nickname !== authNickname) {
-            return
-          }
-          setChatNotice('you have been warned for your previous message')
-        } catch (error) {
-          console.warn('Failed to parse warn event', error)
-        }
-      })
-
-      publicStream.addEventListener('ban', (event) => {
-        try {
-          const payload = JSON.parse(event.data) as { nickname?: string }
-          if (!payload.nickname) {
-            return
-          }
-          if (payload.nickname === authNickname) {
-            clearAuth()
-            setChatError('your account has been banned')
-          }
-        } catch (error) {
-          console.warn('Failed to parse ban event', error)
-        }
-      })
-
-      publicStream.addEventListener('error', () => {
-        setChatError('Chat connection lost. Reconnecting...')
+      attachChatStreamHandlers(publicStream, {
+        includePrivateEvents: false,
+        viewerNickname: null,
       })
 
       return () => {
@@ -1104,111 +1320,32 @@ function App() {
       }
     }
 
-    void fetchMessages()
+    let disposed = false
+    let stream: EventSource | null = null
 
-    const streamUrl = new URL(`${CHAT_API_URL}/messages/stream`, window.location.origin)
-    streamUrl.searchParams.set('token', authToken)
-    const stream = new EventSource(streamUrl.toString())
-    chatStreamRef.current = stream
-
-    stream.addEventListener('ready', () => {
-      setChatError(null)
-    })
-
-    stream.addEventListener('message', (event) => {
-      try {
-        const message = JSON.parse(event.data) as ChatMessage
-        setChatMessages((prev) => {
-          if (prev.some((entry) => entry.id === message.id)) {
-            return prev
-          }
-          const next = [...prev, message]
-          return next.length > 100 ? next.slice(-100) : next
-        })
-        setChatError(null)
-      } catch (error) {
-        console.warn('Failed to parse chat message', error)
+    void (async () => {
+      const canConnect = await fetchMessages()
+      if (!canConnect || disposed) {
+        return
       }
-    })
 
-    stream.addEventListener('clear', () => {
-      setChatMessages([])
-    })
-
-    stream.addEventListener('delete', (event) => {
-      try {
-        const payload = JSON.parse(event.data) as { id?: number }
-        if (!payload.id) {
-          return
-        }
-        setChatMessages((prev) =>
-          prev.map((entry) =>
-            entry.id === payload.id
-              ? { ...entry, body: 'message deleted' }
-              : entry,
-          ),
-        )
-      } catch (error) {
-        console.warn('Failed to parse delete event', error)
-      }
-    })
-
-    stream.addEventListener('purge', (event) => {
-      try {
-        const payload = JSON.parse(event.data) as { nickname?: string }
-        if (!payload.nickname) {
-          return
-        }
-        setChatMessages((prev) =>
-          prev.map((entry) =>
-            entry.nickname === payload.nickname
-              ? { ...entry, body: 'message deleted' }
-              : entry,
-          ),
-        )
-      } catch (error) {
-        console.warn('Failed to parse purge event', error)
-      }
-    })
-
-    stream.addEventListener('warn', (event) => {
-      try {
-        const payload = JSON.parse(event.data) as { nickname?: string }
-        if (!payload.nickname || payload.nickname !== authNickname) {
-          return
-        }
-        setChatNotice('you have been warned for your previous message')
-      } catch (error) {
-        console.warn('Failed to parse warn event', error)
-      }
-    })
-
-    stream.addEventListener('ban', (event) => {
-      try {
-        const payload = JSON.parse(event.data) as { nickname?: string }
-        if (!payload.nickname) {
-          return
-        }
-        if (payload.nickname === authNickname) {
-          clearAuth()
-          setChatError('your account has been banned')
-        }
-      } catch (error) {
-        console.warn('Failed to parse ban event', error)
-      }
-    })
-
-    stream.addEventListener('error', () => {
-      setChatError('Chat connection lost. Reconnecting...')
-    })
+      const streamUrl = new URL(`${CHAT_API_URL}/messages/stream`, window.location.origin)
+      stream = new EventSource(streamUrl.toString())
+      chatStreamRef.current = stream
+      attachChatStreamHandlers(stream, {
+        includePrivateEvents: true,
+        viewerNickname: authNickname,
+      })
+    })()
 
     return () => {
-      stream.close()
-      if (chatStreamRef.current === stream) {
+      disposed = true
+      stream?.close()
+      if (stream && chatStreamRef.current === stream) {
         chatStreamRef.current = null
       }
     }
-  }, [authToken])
+  }, [authNickname, authToken])
 
   useEffect(() => {
     if (!chatScrollRef.current) {
@@ -1270,7 +1407,12 @@ function App() {
         },
       )
 
-      const payload = (await response.json()) as { nickname?: string; token?: string; error?: string }
+      const payload = (await response.json()) as {
+        nickname?: string
+        token?: string
+        isAdmin?: boolean
+        error?: string
+      }
 
       if (!response.ok || !payload.token || !payload.nickname) {
         setAuthError(payload.error || 'Unable to sign in. Check your details.')
@@ -1279,12 +1421,17 @@ function App() {
 
       setAuthToken(payload.token)
       setAuthNickname(payload.nickname)
+      setAuthIsAdmin(Boolean(payload.isAdmin))
       setAuthPasswordInput('')
       setMessageBody('')
       setChatNotice(null)
       window.localStorage.setItem(
         CHAT_STORAGE_KEY,
-        JSON.stringify({ nickname: payload.nickname, token: payload.token }),
+        JSON.stringify({
+          nickname: payload.nickname,
+          token: payload.token,
+          isAdmin: Boolean(payload.isAdmin),
+        }),
       )
     } catch (error) {
       console.warn('Auth failed', error)
@@ -1333,6 +1480,11 @@ function App() {
       }
 
       if (!response.ok) {
+        if (response.status === 403) {
+          clearAuth()
+          setChatError(payload.error || 'your account has been banned')
+          return
+        }
         if (response.status === 429 && payload.cooldownSeconds) {
           setCooldownUntil(Date.now() + payload.cooldownSeconds * 1000)
           setChatError(payload.error || "slow down, don't spam!")
@@ -1353,7 +1505,7 @@ function App() {
     action: AdminAction,
     returnView: AdminConfirmReturnView = null,
   ) => {
-    if (authNickname !== ADMIN_USER) {
+    if (!authIsAdmin) {
       return
     }
     setAdminAction(action)
@@ -1363,7 +1515,7 @@ function App() {
   }
 
   const performAdminAction = async (action: AdminAction) => {
-    if (!authToken || authNickname !== ADMIN_USER) {
+    if (!authToken || !authIsAdmin) {
       setChatError('Admin authorization required.')
       return
     }
@@ -1587,7 +1739,7 @@ function App() {
   ])
 
   const openAdminMessageActions = (messageId: number, nickname: string) => {
-    if (authNickname !== ADMIN_USER) {
+    if (!authIsAdmin) {
       return
     }
     setAdminMessageActionTarget({ messageId, nickname })
@@ -1606,7 +1758,7 @@ function App() {
   }
 
   const fetchAdminUsers = async (view: 'active' | 'banned') => {
-    if (!authToken || authNickname !== ADMIN_USER) {
+    if (!authToken || !authIsAdmin) {
       setAdminMenuOpen(false)
       setChatError('Admin authorization required.')
       return
@@ -1836,24 +1988,7 @@ function App() {
             <div className="flex min-h-0 flex-[1] flex-col">
               <header className="flex h-12 items-center border-b border-zinc-800 px-4 text-xs text-zinc-300">
                 <span className="ui-header font-extrabold">schedule</span>
-                <span className="clock ml-auto text-zinc-500">
-                  {nowTime
-                    .toLocaleTimeString([], {
-                      hour12: true,
-                      hour: 'numeric',
-                      minute: '2-digit',
-                      second: '2-digit',
-                    })
-                    .split('')
-                    .map((char, index) => (
-                      <span
-                        key={`${index}-${char}`}
-                        className={/\d/.test(char) ? 'clock-digit' : undefined}
-                      >
-                        {char}
-                      </span>
-                    ))}
-                </span>
+                <ScheduleClock />
               </header>
               <div className="scrollbar-minimal min-h-0 flex-1 overflow-y-auto">
                 <ul className="divide-y divide-zinc-800">
@@ -1972,7 +2107,7 @@ function App() {
                                 className={
                                   entry.nickname === 'system'
                                     ? 'text-[#f7768e]'
-                                    : entry.nickname === ADMIN_USER
+                                    : entry.is_admin
                                       ? 'text-[#73daca]'
                                       : 'text-zinc-100'
                                 }
@@ -1987,7 +2122,7 @@ function App() {
                                 <span className="break-words whitespace-pre-wrap">{entry.body}</span>
                               )}
                             </div>
-                            {authNickname === ADMIN_USER && (
+                            {authIsAdmin && (
                               <button
                                 type="button"
                                 className="inline-flex h-5 w-5 shrink-0 items-center justify-center text-zinc-500 transition hover:text-zinc-200 cursor-pointer"
@@ -2089,11 +2224,11 @@ function App() {
                       <button
                         type="button"
                         className="text-zinc-400 hover:text-zinc-200"
-                        onClick={clearAuth}
+                        onClick={() => clearAuth()}
                       >
                         sign out
                       </button>
-                      {authNickname === ADMIN_USER ? (
+                      {authIsAdmin ? (
                         <button
                           type="button"
                           className="inline-flex h-6 w-6 items-center justify-center text-zinc-400 transition hover:text-zinc-200 cursor-pointer"
@@ -2143,7 +2278,7 @@ function App() {
                                 className={
                                   entry.nickname === 'system'
                                     ? 'text-[#f7768e]'
-                                    : entry.nickname === ADMIN_USER
+                                    : entry.is_admin
                                       ? 'text-[#73daca]'
                                       : 'text-zinc-100'
                                 }
@@ -2158,7 +2293,7 @@ function App() {
                                 <span className="break-words whitespace-pre-wrap">{entry.body}</span>
                               )}
                             </div>
-                            {authNickname === ADMIN_USER && (
+                            {authIsAdmin && (
                               <button
                                 type="button"
                                 className="inline-flex h-5 w-5 shrink-0 items-center justify-center text-zinc-500 transition hover:text-zinc-200 cursor-pointer"
