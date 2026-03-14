@@ -130,3 +130,35 @@ test("admin bootstrap and ban flow are enforced across existing auth tokens", as
         await context.cleanup();
     }
 });
+
+test("status endpoint summarizes recent schedule and chat activity", async () => {
+    const context = await createTestContext();
+
+    try {
+        const registerResponse = await request(context.app)
+            .post("/api/chat/auth/register")
+            .send({ nickname: "StatusUser", password: "hunter2" });
+
+        await request(context.app)
+            .get("/api/schedule")
+            .expect(200);
+
+        await request(context.app)
+            .post("/api/chat/messages")
+            .set("Authorization", `Bearer ${registerResponse.body.token}`)
+            .send({ body: "hello status panel" })
+            .expect(201);
+
+        const statusResponse = await request(context.app)
+            .get("/api/status");
+
+        assert.equal(statusResponse.status, 200);
+        assert.equal(statusResponse.body.schedule.state, "healthy");
+        assert.equal(statusResponse.body.schedule.itemCount, 0);
+        assert.equal(statusResponse.body.chat.lastMessageNickname, "statususer");
+        assert.equal(statusResponse.body.server.nodeVersion, process.version);
+        assert.equal(typeof statusResponse.body.server.uptimeMs, "number");
+    } finally {
+        await context.cleanup();
+    }
+});

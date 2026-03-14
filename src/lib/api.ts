@@ -1,5 +1,6 @@
 import type { AdminUser } from '../types/admin'
 import type { ScheduleItem } from '../types/schedule'
+import type { DiagnosticsStatusPayload } from '../types/status'
 
 const API_BASE_URL = '/api'
 const CHAT_API_URL = `${API_BASE_URL}/chat`
@@ -94,6 +95,11 @@ export function createChatStreamUrl(pathname: string) {
 }
 
 export const api = {
+  status: {
+    async get() {
+      return requestJson<DiagnosticsStatusPayload>(`${API_BASE_URL}/status`)
+    },
+  },
   schedule: {
     async get() {
       return requestJson<SchedulePayload>(`${API_BASE_URL}/schedule`)

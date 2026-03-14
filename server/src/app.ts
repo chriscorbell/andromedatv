@@ -75,9 +75,11 @@ export type CreateAppOptions = {
     jwtSecret: string;
     staticDir?: string;
     serveStatic?: boolean;
-    logger?: Pick<Console, "warn">;
+    logger?: Pick<Console, "info" | "warn" | "error">;
     loadSchedulePayload?: ScheduleLoader;
 };
+
+type LogLevel = "info" | "warn" | "error";
 
 function normalizeIptvBasePath(pathname: string): string {
     const trimmed = pathname.replace(/\/+$/, "");
@@ -199,6 +201,51 @@ export function createApp(options: CreateAppOptions) {
 
     const app = express();
     const apiChatRouter = express.Router();
+    const startedAt = new Date();
+    const diagnostics = {
+        schedule: {
+            lastSuccessAt: null as string | null,
+            lastFailureAt: null as string | null,
+            lastFailureMessage: null as string | null,
+            lastDurationMs: null as number | null,
+            lastFetchedAt: null as string | null,
+            lastRefreshAfterMs: null as number | null,
+            itemCount: null as number | null,
+        },
+        chat: {
+            lastMessageAt: null as string | null,
+            lastMessageNickname: null as string | null,
+            lastAuthFailureAt: null as string | null,
+            lastAuthFailureReason: null as string | null,
+            lastAdminActionAt: null as string | null,
+            lastAdminActionType: null as string | null,
+            lastAdminTarget: null as string | null,
+            lastPrivateConnectAt: null as string | null,
+            lastPrivateDisconnectAt: null as string | null,
+            lastPublicConnectAt: null as string | null,
+            lastPublicDisconnectAt: null as string | null,
+        },
+        iptv: {
+            lastProxyRequestAt: null as string | null,
+            lastProxyRequestPath: null as string | null,
+            lastPlaylistRewriteAt: null as string | null,
+            lastPlaylistRewritePath: null as string | null,
+            lastProxyErrorAt: null as string | null,
+            lastProxyError: null as string | null,
+        },
+    };
+
+    function logEvent(level: LogLevel, event: string, details: Record<string, unknown> = {}) {
+        const logFn = logger[level] || logger.warn;
+        logFn(
+            JSON.stringify({
+                ts: new Date().toISOString(),
+                scope: "andromeda",
+                event,
+                ...details,
+            })
+        );
+    }
 
     function checkRateLimit(nickname: string, now: number) {
         const entry = rateLimits.get(nickname) || { timestamps: [] };
@@ -342,7 +389,7 @@ export function createApp(options: CreateAppOptions) {
         }));
     };
 
-    const loadSchedulePayload: ScheduleLoader = options.loadSchedulePayload || (async () => {
+    const baseLoadSchedulePayload: ScheduleLoader = options.loadSchedulePayload || (async () => {
         const now = Date.now();
         if (scheduleCache && scheduleCache.expiresAt > now) {
             return scheduleCache.payload;
@@ -381,28 +428,69 @@ export function createApp(options: CreateAppOptions) {
         }
     });
 
+    const loadSchedulePayload: ScheduleLoader = async () => {
+        const startedAtMs = Date.now();
+
+        try {
+            const payload = await baseLoadSchedulePayload();
+            diagnostics.schedule.lastSuccessAt = new Date().toISOString();
+            diagnostics.schedule.lastFailureMessage = null;
+            diagnostics.schedule.lastDurationMs = Date.now() - startedAtMs;
+            diagnostics.schedule.lastFetchedAt = payload.fetchedAt;
+            diagnostics.schedule.lastRefreshAfterMs = payload.refreshAfterMs;
+            diagnostics.schedule.itemCount = payload.schedule.length;
+
+            logEvent("info", "schedule.refresh.ok", {
+                durationMs: diagnostics.schedule.lastDurationMs,
+                itemCount: payload.schedule.length,
+                refreshAfterMs: payload.refreshAfterMs,
+            });
+
+            return payload;
+        } catch (error) {
+            diagnostics.schedule.lastFailureAt = new Date().toISOString();
+            diagnostics.schedule.lastFailureMessage =
+                error instanceof Error ? error.message : String(error);
+
+            logEvent("warn", "schedule.refresh.failed", {
+                durationMs: Date.now() - startedAtMs,
+                error: diagnostics.schedule.lastFailureMessage,
+            });
+
+            throw error;
+        }
+    };
+
     const requireAuth = async (req: AuthedRequest, res: Response, next: NextFunction) => {
         const bearerToken = extractBearerToken(req);
         const cookieToken = getCookieToken(req);
         const authToken = bearerToken || cookieToken;
         if (!authToken) {
             clearStreamAuthCookie(req, res);
+            diagnostics.chat.lastAuthFailureAt = new Date().toISOString();
+            diagnostics.chat.lastAuthFailureReason = "missing_auth_token";
             return res.status(401).json({ error: "Missing auth token" });
         }
 
         const payload = verifyToken(authToken);
         if (!payload?.nickname) {
             clearStreamAuthCookie(req, res);
+            diagnostics.chat.lastAuthFailureAt = new Date().toISOString();
+            diagnostics.chat.lastAuthFailureReason = "invalid_auth_token";
             return res.status(401).json({ error: "Invalid token" });
         }
 
         const user = await findUserByNickname(normalizeNickname(payload.nickname));
         if (!user) {
             clearStreamAuthCookie(req, res);
+            diagnostics.chat.lastAuthFailureAt = new Date().toISOString();
+            diagnostics.chat.lastAuthFailureReason = "token_user_missing";
             return res.status(401).json({ error: "Invalid token" });
         }
         if (user.banned) {
             clearStreamAuthCookie(req, res);
+            diagnostics.chat.lastAuthFailureAt = new Date().toISOString();
+            diagnostics.chat.lastAuthFailureReason = "token_user_banned";
             return res.status(403).json({ error: "this account has been banned" });
         }
 
@@ -432,11 +520,73 @@ export function createApp(options: CreateAppOptions) {
         res.json({ ok: true });
     });
 
+    app.get("/api/status", (_req: Request, res: Response) => {
+        const scheduleState =
+            diagnostics.schedule.lastSuccessAt
+                ? diagnostics.schedule.lastFailureAt &&
+                    diagnostics.schedule.lastFailureAt > diagnostics.schedule.lastSuccessAt
+                    ? "degraded"
+                    : "healthy"
+                : diagnostics.schedule.lastFailureAt
+                    ? "offline"
+                    : "starting";
+
+        res.json({
+            server: {
+                startedAt: startedAt.toISOString(),
+                uptimeMs: Date.now() - startedAt.getTime(),
+                nodeVersion: process.version,
+                heartbeatActive: Boolean(heartbeatTimer),
+                publicChatClients: publicStreamClients.size,
+                privateChatClients: privateStreamClients.size,
+                rateLimitedUsers: rateLimits.size,
+            },
+            schedule: {
+                state: scheduleState,
+                cacheExpiresAt: scheduleCache
+                    ? new Date(scheduleCache.expiresAt).toISOString()
+                    : null,
+                itemCount: diagnostics.schedule.itemCount,
+                lastDurationMs: diagnostics.schedule.lastDurationMs,
+                lastFailureAt: diagnostics.schedule.lastFailureAt,
+                lastFailureMessage: diagnostics.schedule.lastFailureMessage,
+                lastFetchedAt: diagnostics.schedule.lastFetchedAt,
+                lastRefreshAfterMs: diagnostics.schedule.lastRefreshAfterMs,
+                lastSuccessAt: diagnostics.schedule.lastSuccessAt,
+            },
+            chat: {
+                publicClients: publicStreamClients.size,
+                privateClients: privateStreamClients.size,
+                lastAdminActionAt: diagnostics.chat.lastAdminActionAt,
+                lastAdminActionType: diagnostics.chat.lastAdminActionType,
+                lastAdminTarget: diagnostics.chat.lastAdminTarget,
+                lastAuthFailureAt: diagnostics.chat.lastAuthFailureAt,
+                lastAuthFailureReason: diagnostics.chat.lastAuthFailureReason,
+                lastMessageAt: diagnostics.chat.lastMessageAt,
+                lastMessageNickname: diagnostics.chat.lastMessageNickname,
+                lastPrivateConnectAt: diagnostics.chat.lastPrivateConnectAt,
+                lastPrivateDisconnectAt: diagnostics.chat.lastPrivateDisconnectAt,
+                lastPublicConnectAt: diagnostics.chat.lastPublicConnectAt,
+                lastPublicDisconnectAt: diagnostics.chat.lastPublicDisconnectAt,
+            },
+            iptv: {
+                lastPlaylistRewriteAt: diagnostics.iptv.lastPlaylistRewriteAt,
+                lastPlaylistRewritePath: diagnostics.iptv.lastPlaylistRewritePath,
+                lastProxyError: diagnostics.iptv.lastProxyError,
+                lastProxyErrorAt: diagnostics.iptv.lastProxyErrorAt,
+                lastProxyRequestAt: diagnostics.iptv.lastProxyRequestAt,
+                lastProxyRequestPath: diagnostics.iptv.lastProxyRequestPath,
+            },
+        });
+    });
+
     app.use(
         "/iptv",
         async (req: Request, res: Response) => {
             const requestUrl = new URL(req.originalUrl, "http://localhost");
             const suffixPath = requestUrl.pathname.replace(/^\/iptv(?=\/|$)/, "") || "/";
+            diagnostics.iptv.lastProxyRequestAt = new Date().toISOString();
+            diagnostics.iptv.lastProxyRequestPath = suffixPath;
 
             const targetUrl = new URL(ersatzBaseUrl.toString());
             targetUrl.pathname = joinUrlPaths(ersatzIptvBasePath, suffixPath);
@@ -485,6 +635,8 @@ export function createApp(options: CreateAppOptions) {
                                 original.toString("utf8"),
                                 getRequestOrigin(req)
                             );
+                            diagnostics.iptv.lastPlaylistRewriteAt = new Date().toISOString();
+                            diagnostics.iptv.lastPlaylistRewritePath = suffixPath;
                             res.status(proxyRes.statusCode || 502);
                             copyUpstreamHeaders(proxyRes.headers, res, true);
                             setNoCacheHeaders(res);
@@ -509,6 +661,12 @@ export function createApp(options: CreateAppOptions) {
             });
 
             proxyReq.on("error", (err) => {
+                diagnostics.iptv.lastProxyErrorAt = new Date().toISOString();
+                diagnostics.iptv.lastProxyError = err.message;
+                logEvent("warn", "iptv.proxy.failed", {
+                    path: suffixPath,
+                    error: err.message,
+                });
                 if (!res.headersSent) {
                     res.status(502).json({
                         error: "iptv upstream request failed",
@@ -542,8 +700,7 @@ export function createApp(options: CreateAppOptions) {
             const payload = await loadSchedulePayload();
             setNoCacheHeaders(res);
             return res.json(payload);
-        } catch (error) {
-            logger.warn("Failed to load normalized schedule", error);
+        } catch {
             return res.status(502).json({ error: "Failed to load schedule" });
         }
     });
@@ -567,9 +724,13 @@ export function createApp(options: CreateAppOptions) {
             nickname
         );
         if (existingUser?.banned) {
+            diagnostics.chat.lastAuthFailureAt = new Date().toISOString();
+            diagnostics.chat.lastAuthFailureReason = "register_banned_user";
             return res.status(403).json({ error: "this account has been banned" });
         }
         if (existingUser) {
+            diagnostics.chat.lastAuthFailureAt = new Date().toISOString();
+            diagnostics.chat.lastAuthFailureReason = "register_username_exists";
             return res.status(409).json({ error: "Username already exists" });
         }
 
@@ -628,15 +789,21 @@ export function createApp(options: CreateAppOptions) {
         );
 
         if (!user) {
+            diagnostics.chat.lastAuthFailureAt = new Date().toISOString();
+            diagnostics.chat.lastAuthFailureReason = "login_user_missing";
             return res.status(401).json({ error: "Invalid credentials" });
         }
 
         if (user.banned) {
+            diagnostics.chat.lastAuthFailureAt = new Date().toISOString();
+            diagnostics.chat.lastAuthFailureReason = "login_user_banned";
             return res.status(403).json({ error: "this account has been banned" });
         }
 
         const ok = await bcrypt.compare(password, user.password_hash);
         if (!ok) {
+            diagnostics.chat.lastAuthFailureAt = new Date().toISOString();
+            diagnostics.chat.lastAuthFailureReason = "login_password_mismatch";
             return res.status(401).json({ error: "Invalid credentials" });
         }
 
@@ -688,10 +855,20 @@ export function createApp(options: CreateAppOptions) {
             res,
         };
         privateStreamClients.add(client);
+        diagnostics.chat.lastPrivateConnectAt = new Date().toISOString();
+        logEvent("info", "chat.stream.private.connected", {
+            nickname: client.nickname,
+            privateClients: privateStreamClients.size,
+        });
         startHeartbeat();
 
         req.on("close", () => {
             privateStreamClients.delete(client);
+            diagnostics.chat.lastPrivateDisconnectAt = new Date().toISOString();
+            logEvent("info", "chat.stream.private.disconnected", {
+                nickname: client.nickname,
+                privateClients: privateStreamClients.size,
+            });
             if (publicStreamClients.size === 0 && privateStreamClients.size === 0 && heartbeatTimer) {
                 clearInterval(heartbeatTimer);
                 heartbeatTimer = null;
@@ -714,10 +891,18 @@ export function createApp(options: CreateAppOptions) {
 
         const client: PublicStreamClient = { res };
         publicStreamClients.add(client);
+        diagnostics.chat.lastPublicConnectAt = new Date().toISOString();
+        logEvent("info", "chat.stream.public.connected", {
+            publicClients: publicStreamClients.size,
+        });
         startHeartbeat();
 
         _req.on("close", () => {
             publicStreamClients.delete(client);
+            diagnostics.chat.lastPublicDisconnectAt = new Date().toISOString();
+            logEvent("info", "chat.stream.public.disconnected", {
+                publicClients: publicStreamClients.size,
+            });
             if (publicStreamClients.size === 0 && privateStreamClients.size === 0 && heartbeatTimer) {
                 clearInterval(heartbeatTimer);
                 heartbeatTimer = null;
@@ -771,6 +956,9 @@ export function createApp(options: CreateAppOptions) {
             is_admin: Boolean(req.user?.isAdmin),
         };
 
+        diagnostics.chat.lastMessageAt = createdAt;
+        diagnostics.chat.lastMessageNickname = nickname;
+
         broadcastChatEvent("message", message);
 
         return res.status(201).json({ message });
@@ -778,6 +966,10 @@ export function createApp(options: CreateAppOptions) {
 
     apiChatRouter.post("/admin/clear", requireAuth, requireAdmin, async (_req: Request, res: Response) => {
         await db.run("DELETE FROM messages");
+        diagnostics.chat.lastAdminActionAt = new Date().toISOString();
+        diagnostics.chat.lastAdminActionType = "clear_chat";
+        diagnostics.chat.lastAdminTarget = "all_messages";
+        logEvent("info", "chat.admin.clear", { target: "all_messages" });
 
         broadcastChatEvent("clear", { ok: true });
 
@@ -804,6 +996,10 @@ export function createApp(options: CreateAppOptions) {
                 "message deleted",
                 messageId
             );
+            diagnostics.chat.lastAdminActionAt = new Date().toISOString();
+            diagnostics.chat.lastAdminActionType = "delete_message";
+            diagnostics.chat.lastAdminTarget = String(messageId);
+            logEvent("info", "chat.admin.delete_message", { messageId });
 
             broadcastChatEvent("delete", { id: messageId });
 
@@ -844,6 +1040,13 @@ export function createApp(options: CreateAppOptions) {
                 },
                 (client) => client.nickname === normalizeNickname(message.nickname)
             );
+            diagnostics.chat.lastAdminActionAt = new Date().toISOString();
+            diagnostics.chat.lastAdminActionType = "warn_user";
+            diagnostics.chat.lastAdminTarget = normalizeNickname(message.nickname);
+            logEvent("info", "chat.admin.warn_user", {
+                messageId,
+                nickname: normalizeNickname(message.nickname),
+            });
 
             return res.json({ ok: true, nickname: message.nickname });
         }
@@ -910,6 +1113,10 @@ export function createApp(options: CreateAppOptions) {
                     created_at: createdAt,
                     is_admin: false,
                 });
+                diagnostics.chat.lastAdminActionAt = new Date().toISOString();
+                diagnostics.chat.lastAdminActionType = "ban_user";
+                diagnostics.chat.lastAdminTarget = nickname;
+                logEvent("info", "chat.admin.ban_user", { nickname });
             } catch (error) {
                 await db.exec("ROLLBACK");
                 throw error;
@@ -993,6 +1200,10 @@ export function createApp(options: CreateAppOptions) {
                     created_at: createdAt,
                     is_admin: false,
                 });
+                diagnostics.chat.lastAdminActionAt = new Date().toISOString();
+                diagnostics.chat.lastAdminActionType = "unban_user";
+                diagnostics.chat.lastAdminTarget = nickname;
+                logEvent("info", "chat.admin.unban_user", { nickname });
             } catch (error) {
                 await db.exec("ROLLBACK");
                 throw error;
@@ -1033,6 +1244,10 @@ export function createApp(options: CreateAppOptions) {
             }
 
             broadcastChatEvent("purge", { nickname });
+            diagnostics.chat.lastAdminActionAt = new Date().toISOString();
+            diagnostics.chat.lastAdminActionType = "delete_user";
+            diagnostics.chat.lastAdminTarget = nickname;
+            logEvent("info", "chat.admin.delete_user", { nickname });
 
             return res.json({ ok: true });
         }
