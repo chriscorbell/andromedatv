@@ -48,6 +48,9 @@ jobs:
       - name: Run server tests
         run: npm --prefix server test
 
+      - name: Run frontend tests
+        run: bun run test:client
+
       - name: Build frontend
         run: bun run build
 
