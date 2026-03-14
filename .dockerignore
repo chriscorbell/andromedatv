@@ -6,9 +6,9 @@
 node_modules
 dist
 
-chat/node_modules
-chat/dist
+server/node_modules
+server/dist
 .env
 .env.*
 
-chat-data
+data
