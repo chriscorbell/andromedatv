@@ -8,7 +8,7 @@ describe('chat accessibility', () => {
     render(
       <ChatAuthForm
         authError="Invalid credentials"
-        authLoading={false}
+        authLoading
         authMode="login"
         chatError="Chat unavailable"
         chatLoading
@@ -26,8 +26,11 @@ describe('chat accessibility', () => {
 
     expect(usernameInput).toHaveAttribute('aria-invalid', 'true')
     expect(passwordInput).toHaveAttribute('aria-invalid', 'true')
+    expect(usernameInput).toBeDisabled()
+    expect(passwordInput).toBeDisabled()
     expect(screen.getByRole('alert')).toHaveTextContent('Invalid credentials')
-    expect(screen.getAllByRole('status')).toHaveLength(2)
+    expect(screen.getByText('Signing you into chat...')).toBeInTheDocument()
+    expect(screen.getAllByRole('status')).toHaveLength(3)
   })
 
   it('wires composer labels, alerts, and admin affordances', () => {
@@ -44,6 +47,8 @@ describe('chat accessibility', () => {
         chatNotice="you have been warned"
         cooldownRemaining={12}
         disabled={false}
+        messageSending
+        messageStatus="Sending message..."
         messageBody="hello"
         onMessageBodyChange={handleMessageBodyChange}
         onOpenAdminMenu={handleOpenAdminMenu}
@@ -55,8 +60,10 @@ describe('chat accessibility', () => {
 
     const textarea = screen.getByLabelText('Chat message')
     expect(textarea).toHaveAttribute('aria-invalid', 'true')
+    expect(textarea).toBeDisabled()
     expect(screen.getByRole('alert')).toHaveTextContent('slow down')
-    expect(screen.getAllByRole('status')).toHaveLength(2)
+    expect(screen.getByText('Sending message...')).toBeInTheDocument()
+    expect(screen.getAllByRole('status')).toHaveLength(3)
 
     fireEvent.click(screen.getByRole('button', { name: 'Open admin menu' }))
     expect(handleOpenAdminMenu).toHaveBeenCalledTimes(1)

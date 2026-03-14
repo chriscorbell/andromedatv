@@ -33,10 +33,16 @@ export function ChatAuthForm({
   const passwordId = useId()
   const statusId = useId()
   const errorId = useId()
+  const authStatusId = useId()
   const describedBy = [
     chatError ? statusId : null,
     authError ? errorId : null,
+    authLoading ? authStatusId : null,
   ].filter(Boolean).join(' ') || undefined
+  const authPendingMessage =
+    authMode === 'login'
+      ? 'Signing you into chat...'
+      : 'Creating your account...'
 
   return (
     <form
@@ -51,7 +57,7 @@ export function ChatAuthForm({
       {chatError && (
         <div
           id={statusId}
-          className="text-[var(--color-accent-red)]"
+          className="border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-zinc-100"
           role="status"
           aria-live="polite"
         >
@@ -69,6 +75,7 @@ export function ChatAuthForm({
         autoComplete="username"
         aria-invalid={Boolean(authError)}
         aria-describedby={describedBy}
+        disabled={authLoading}
         className="h-9 border border-zinc-700 bg-black/40 px-3 text-zinc-100 placeholder:text-zinc-600 focus:border-zinc-500 focus:outline-none"
       />
       <label htmlFor={passwordId} className="sr-only">
@@ -85,6 +92,7 @@ export function ChatAuthForm({
         }
         aria-invalid={Boolean(authError)}
         aria-describedby={describedBy}
+        disabled={authLoading}
         className="h-9 border border-zinc-700 bg-black/40 px-3 text-zinc-100 placeholder:text-zinc-600 focus:border-zinc-500 focus:outline-none"
       />
       <button
@@ -98,10 +106,20 @@ export function ChatAuthForm({
             ? 'sign in'
             : 'create account'}
       </button>
+      {authLoading && (
+        <div
+          id={authStatusId}
+          className="border border-zinc-700 bg-zinc-900/70 px-3 py-2 text-zinc-300"
+          role="status"
+          aria-live="polite"
+        >
+          {authPendingMessage}
+        </div>
+      )}
       {authError && (
         <div
           id={errorId}
-          className="text-[var(--color-accent-red)]"
+          className="border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-rose-100"
           role="alert"
         >
           {authError}
@@ -109,12 +127,13 @@ export function ChatAuthForm({
       )}
       {chatLoading && (
         <div className="text-zinc-500" role="status" aria-live="polite">
-          updating…
+          loading recent chat…
         </div>
       )}
       <button
         type="button"
         onClick={onAuthModeToggle}
+        disabled={authLoading}
         className="group inline-flex w-fit items-center gap-1 text-left text-zinc-400 transition-colors duration-200 ease-out hover:text-zinc-100 focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-zinc-500 cursor-pointer"
       >
         {authMode === 'login'

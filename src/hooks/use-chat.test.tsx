@@ -1,4 +1,5 @@
 import { act, renderHook, waitFor } from '@testing-library/react'
+import type { FormEvent } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useChat } from './use-chat'
 
@@ -260,5 +261,70 @@ describe('useChat', () => {
     })
     expect(MockEventSource.instances[0]?.closed).toBe(true)
     expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('tracks message mutation state while sending and clears it after success', async () => {
+    window.localStorage.setItem(
+      'andromeda-chat-auth',
+      JSON.stringify({
+        nickname: 'testuser',
+        token: 'token-123',
+        isAdmin: false,
+      }),
+    )
+
+    const fetchMock = vi.mocked(fetch)
+    fetchMock
+      .mockImplementationOnce(() =>
+        createJsonResponse({
+          json: { messages: [] },
+        }),
+      )
+      .mockImplementationOnce(() =>
+        createJsonResponse({
+          json: {
+            messages: [],
+            user: {
+              nickname: 'testuser',
+              isAdmin: false,
+            },
+          },
+        }),
+      )
+      .mockImplementationOnce(() =>
+        createJsonResponse({
+          json: { ok: true },
+        }),
+      )
+
+    const { result } = renderHook(() => useChat())
+
+    await waitFor(() => {
+      expect(result.current.authToken).toBe('token-123')
+    })
+
+    act(() => {
+      result.current.handleMessageBodyChange('hello world')
+    })
+
+    await act(async () => {
+      await result.current.handleSendMessage({
+        preventDefault() {},
+      } as FormEvent<HTMLFormElement>)
+    })
+
+    await waitFor(() => {
+      expect(result.current.messageSending).toBe(false)
+    })
+    expect(result.current.messageStatus).toBe('Message sent.')
+    expect(result.current.messageBody).toBe('')
+    expect(fetchMock).toHaveBeenLastCalledWith('/api/chat/messages', {
+      body: JSON.stringify({ body: 'hello world' }),
+      headers: {
+        Authorization: 'Bearer token-123',
+        'Content-Type': 'application/json',
+      },
+      method: 'POST',
+    })
   })
 })

@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
-import type Hls from 'hls.js'
+import type Hls from 'hls.js/light'
 
 const HLS_URL = '/iptv/session/1/hls.m3u8'
 const HLS_WARMUP_DELAY_MS = 150
 
-type HlsCtor = typeof import('hls.js').default
+type HlsCtor = typeof import('hls.js/light').default
 type IdleCallbackHandle = number
 type PlaybackState = 'connecting' | 'live' | 'reconnecting' | 'offline'
 
@@ -20,7 +20,7 @@ async function loadSharedHlsCtor() {
     return cachedHlsCtorPromise
   }
 
-  cachedHlsCtorPromise = import('hls.js')
+  cachedHlsCtorPromise = import('hls.js/light')
     .then((module) => {
       if (!module.default.isSupported()) {
         return null

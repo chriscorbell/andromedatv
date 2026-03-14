@@ -8,6 +8,8 @@ type ChatComposerProps = {
   chatNotice: string | null
   cooldownRemaining: number | null
   disabled: boolean
+  messageSending: boolean
+  messageStatus: string | null
   messageBody: string
   onMessageBodyChange: (value: string) => void
   onOpenAdminMenu: () => void
@@ -23,6 +25,8 @@ export function ChatComposer({
   chatNotice,
   cooldownRemaining,
   disabled,
+  messageSending,
+  messageStatus,
   messageBody,
   onMessageBodyChange,
   onOpenAdminMenu,
@@ -34,11 +38,14 @@ export function ChatComposer({
   const noticeId = useId()
   const errorId = useId()
   const loadingId = useId()
+  const messageStatusId = useId()
   const describedBy = [
     chatNotice ? noticeId : null,
     chatError ? errorId : null,
     chatLoading ? loadingId : null,
+    messageStatus ? messageStatusId : null,
   ].filter(Boolean).join(' ') || undefined
+  const composerDisabled = disabled || messageSending
 
   return (
     <form
@@ -97,7 +104,7 @@ export function ChatComposer({
             }
           }}
           placeholder="Type a message"
-          disabled={disabled}
+          disabled={composerDisabled}
           rows={1}
           aria-invalid={Boolean(chatError)}
           aria-describedby={describedBy}
@@ -105,16 +112,26 @@ export function ChatComposer({
         />
         <button
           type="submit"
-          disabled={disabled}
+          disabled={composerDisabled}
           className="h-9 border border-zinc-700 bg-zinc-900 px-3 text-zinc-100 transition hover:border-zinc-500 disabled:cursor-not-allowed disabled:opacity-60"
         >
-          send
+          {messageSending ? 'sending…' : 'send'}
         </button>
       </div>
+      {messageStatus && (
+        <div
+          id={messageStatusId}
+          className="mt-2 text-zinc-400"
+          role="status"
+          aria-live="polite"
+        >
+          {messageStatus}
+        </div>
+      )}
       {chatError && (
         <div
           id={errorId}
-          className="mt-2 text-[var(--color-accent-red)]"
+          className="mt-2 border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-rose-100"
           role="alert"
         >
           {chatError}
@@ -132,7 +149,7 @@ export function ChatComposer({
           role="status"
           aria-live="polite"
         >
-          updating…
+          syncing chat history…
         </div>
       )}
       <div className="mt-2 flex items-center justify-between text-zinc-500">

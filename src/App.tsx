@@ -39,16 +39,18 @@ function App() {
     cooldownRemaining,
     cooldownUntil,
     handleAuthSubmit,
+    handleAuthNicknameChange,
+    handleAuthPasswordChange,
+    handleMessageBodyChange,
     handleSendMessage,
     messageBody,
+    messageSending,
+    messageStatus,
     redactMessagesByNickname,
     removeMessagesByNickname,
     replaceDeletedMessage,
     retryChatConnection,
-    setAuthNicknameInput,
-    setAuthPasswordInput,
     setChatError,
-    setMessageBody,
     toggleAuthMode,
   } = useChat()
   const {
@@ -258,8 +260,10 @@ function App() {
                     chatNotice={chatNotice}
                     cooldownRemaining={cooldownRemaining}
                     disabled={Boolean(cooldownUntil)}
+                    messageSending={messageSending}
+                    messageStatus={messageStatus}
                     messageBody={messageBody}
-                    onMessageBodyChange={setMessageBody}
+                    onMessageBodyChange={handleMessageBodyChange}
                     onOpenAdminMenu={openAdminMenu}
                     onSignOut={() => clearAuth()}
                     onSubmit={handleSendMessage}
@@ -288,8 +292,8 @@ function App() {
                     chatLoading={chatLoading}
                     nickname={authNicknameInput}
                     onAuthModeToggle={toggleAuthMode}
-                    onNicknameChange={setAuthNicknameInput}
-                    onPasswordChange={setAuthPasswordInput}
+                    onNicknameChange={handleAuthNicknameChange}
+                    onPasswordChange={handleAuthPasswordChange}
                     onSubmit={handleAuthSubmit}
                     password={authPasswordInput}
                   />

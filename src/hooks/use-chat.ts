@@ -15,6 +15,7 @@ export function useChat() {
   const chatScrollRef = useRef<HTMLDivElement | null>(null)
   const chatInputRef = useRef<HTMLTextAreaElement | null>(null)
   const chatStreamRef = useRef<EventSource | null>(null)
+  const messageStatusTimeoutRef = useRef<number | null>(null)
   const chatConnectionFailuresRef = useRef(0)
   const chatConnectedOnceRef = useRef(false)
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
@@ -32,6 +33,8 @@ export function useChat() {
   const [chatLoading, setChatLoading] = useState(false)
   const [cooldownUntil, setCooldownUntil] = useState<number | null>(null)
   const [cooldownRemaining, setCooldownRemaining] = useState<number | null>(null)
+  const [messageSending, setMessageSending] = useState(false)
+  const [messageStatus, setMessageStatus] = useState<string | null>(null)
   const [chatConnectionState, setChatConnectionState] =
     useState<ChatConnectionState>('connecting')
   const [chatConnectionDetail, setChatConnectionDetail] = useState(
@@ -74,6 +77,7 @@ export function useChat() {
     setAuthPasswordInput('')
     setAuthError(null)
     setChatNotice(null)
+    setMessageStatus(null)
     if (chatStreamRef.current) {
       chatStreamRef.current.close()
       chatStreamRef.current = null
@@ -84,6 +88,16 @@ export function useChat() {
         console.warn('Failed to clear chat session cookie', error)
       })
     }
+  }
+
+  const clearMessageStatusSoon = () => {
+    if (messageStatusTimeoutRef.current) {
+      window.clearTimeout(messageStatusTimeoutRef.current)
+    }
+    messageStatusTimeoutRef.current = window.setTimeout(() => {
+      setMessageStatus(null)
+      messageStatusTimeoutRef.current = null
+    }, 2400)
   }
 
   const appendChatMessage = (message: ChatMessage) => {
@@ -423,6 +437,14 @@ export function useChat() {
     }
   }, [cooldownUntil])
 
+  useEffect(() => {
+    return () => {
+      if (messageStatusTimeoutRef.current) {
+        window.clearTimeout(messageStatusTimeoutRef.current)
+      }
+    }
+  }, [])
+
   const handleAuthSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     setAuthError(null)
@@ -447,6 +469,7 @@ export function useChat() {
       setAuthPasswordInput('')
       setMessageBody('')
       setChatNotice(null)
+      setMessageStatus(null)
       window.localStorage.setItem(
         CHAT_STORAGE_KEY,
         JSON.stringify({
@@ -480,6 +503,12 @@ export function useChat() {
     }
 
     setChatError(null)
+    setMessageStatus('Sending message...')
+    setMessageSending(true)
+    if (messageStatusTimeoutRef.current) {
+      window.clearTimeout(messageStatusTimeoutRef.current)
+      messageStatusTimeoutRef.current = null
+    }
 
     try {
       const { data: payload, response } = await api.chat.sendMessage(
@@ -498,29 +527,66 @@ export function useChat() {
         if (response.status === 403) {
           clearAuth()
           setChatError(parsedPayload.error || 'your account has been banned')
+          setMessageStatus(null)
           return
         }
         if (response.status === 429 && parsedPayload.cooldownSeconds) {
           setCooldownUntil(Date.now() + parsedPayload.cooldownSeconds * 1000)
           setChatError(parsedPayload.error || "slow down, don't spam!")
+          setMessageStatus(null)
           return
         }
         setChatError(parsedPayload.error || 'Message failed to send.')
+        setMessageStatus(null)
         return
       }
 
       setMessageBody('')
+      setMessageStatus('Message sent.')
+      clearMessageStatusSoon()
     } catch (error) {
       console.warn('Failed to send chat message', error)
       setChatError('Message failed to send.')
+      setMessageStatus(null)
+    } finally {
+      setMessageSending(false)
     }
   }
 
   const toggleAuthMode = () => {
     setAuthMode((prev) => {
+      setAuthError(null)
       setChatNotice(null)
       return prev === 'login' ? 'register' : 'login'
     })
+  }
+
+  const handleAuthNicknameChange = (value: string) => {
+    setAuthNicknameInput(value)
+    if (authError) {
+      setAuthError(null)
+    }
+  }
+
+  const handleAuthPasswordChange = (value: string) => {
+    setAuthPasswordInput(value)
+    if (authError) {
+      setAuthError(null)
+    }
+  }
+
+  const handleMessageBodyChange = (value: string) => {
+    setMessageBody(value)
+    if (chatError) {
+      setChatError(null)
+    }
+    if (messageStatus === 'Message sent.') {
+      setMessageStatus(null)
+      if (messageStatusTimeoutRef.current) {
+        window.clearTimeout(messageStatusTimeoutRef.current)
+        messageStatusTimeoutRef.current = null
+      }
+    }
   }
 
   const retryChatConnection = () => {
@@ -562,14 +628,17 @@ export function useChat() {
     handleAuthSubmit,
     handleSendMessage,
     messageBody,
+    messageSending,
+    messageStatus,
     redactMessagesByNickname,
     removeMessagesByNickname,
     replaceDeletedMessage,
     retryChatConnection,
-    setAuthNicknameInput,
-    setAuthPasswordInput,
+    setAuthError,
     setChatError,
-    setMessageBody,
+    handleAuthNicknameChange,
+    handleAuthPasswordChange,
+    handleMessageBodyChange,
     toggleAuthMode,
   }
 }
