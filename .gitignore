@@ -16,6 +16,9 @@ dist-ssr
 .env.*
 !.env.example
 data/
+.tmp/
+playwright-report/
+test-results/
 
 # Editor directories and files
 .vscode/*

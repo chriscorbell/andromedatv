@@ -23,6 +23,14 @@ The app is served from one origin and one process:
 - `bun run build`
 - `bun run preview`
 - `bun run lint`
+- `bun run test:client`
+- `bun run test:e2e`
+
+For browser smoke tests, install Chromium once locally with:
+
+```bash
+bunx playwright install chromium
+```
 
 ## Backend
 
