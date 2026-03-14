@@ -6,12 +6,10 @@ import { ChatComposer } from './components/chat-composer'
 import { ChatMessageList } from './components/chat-message-list'
 import { SchedulePanel } from './components/schedule-panel'
 import { ServiceStatusBanner } from './components/service-status-banner'
-import { StatusPage } from './components/status-page'
 import { VideoPlayer } from './components/video-player'
 import { useAdminControls } from './hooks/use-admin-controls'
 import { useChat } from './hooks/use-chat'
 import { useSchedule } from './hooks/use-schedule'
-import { useSystemStatus } from './hooks/use-system-status'
 import { useVideoPlayer } from './hooks/use-video-player'
 
 const AdminOverlays = lazy(() => import('./components/admin-overlays'))
@@ -103,12 +101,6 @@ function MainApp() {
     syncScheduleTitleTooltip,
     toggleScheduleItem,
   } = useSchedule()
-  const {
-    error: diagnosticsError,
-    loading: diagnosticsLoading,
-    retry: retryDiagnostics,
-    status: diagnosticsStatus,
-  } = useSystemStatus(infoVisible)
   const shouldRenderAdminOverlays =
     authIsAdmin ||
     adminMenu.visible ||
@@ -175,12 +167,6 @@ function MainApp() {
             className="h-3.5 w-3.5 object-contain"
           />
           <span className="ui-header font-extrabold">andromeda</span>
-          <a
-            href="/status"
-            className="border border-zinc-700 px-2 py-1 text-[10px] uppercase tracking-[0.2em] text-zinc-400 transition hover:border-zinc-400 hover:text-zinc-100"
-          >
-            status
-          </a>
           <button
             type="button"
             className="ml-auto inline-flex h-6 w-6 items-center justify-center text-zinc-500 transition hover:text-zinc-200 cursor-pointer"
@@ -338,40 +324,11 @@ function MainApp() {
       )}
       <AboutModal
         active={infoActive}
-        diagnosticsError={diagnosticsError}
-        diagnosticsLoading={diagnosticsLoading}
-        diagnosticsStatus={diagnosticsStatus}
         onClose={closeInfo}
-        onRetryDiagnostics={retryDiagnostics}
         visible={infoVisible}
       />
     </div>
   )
 }
 
-function App() {
-  const normalizedPathname =
-    window.location.pathname.replace(/\/+$/, '') || '/'
-  const isStatusPage = normalizedPathname === '/status'
-  const {
-    error: diagnosticsError,
-    loading: diagnosticsLoading,
-    retry: retryDiagnostics,
-    status: diagnosticsStatus,
-  } = useSystemStatus(isStatusPage)
-
-  if (isStatusPage) {
-    return (
-      <StatusPage
-        diagnosticsError={diagnosticsError}
-        diagnosticsLoading={diagnosticsLoading}
-        diagnosticsStatus={diagnosticsStatus}
-        onRetryDiagnostics={retryDiagnostics}
-      />
-    )
-  }
-
-  return <MainApp />
-}
-
-export default App
+export default MainApp

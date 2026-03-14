@@ -1,23 +1,12 @@
-import { SystemStatusPanel } from './system-status-panel'
-import type { DiagnosticsStatusPayload } from '../types/status'
-
 type AboutModalProps = {
   active: boolean
-  diagnosticsError: string | null
-  diagnosticsLoading: boolean
-  diagnosticsStatus: DiagnosticsStatusPayload | null
   onClose: () => void
-  onRetryDiagnostics: () => void
   visible: boolean
 }
 
 export function AboutModal({
   active,
-  diagnosticsError,
-  diagnosticsLoading,
-  diagnosticsStatus,
   onClose,
-  onRetryDiagnostics,
   visible,
 }: AboutModalProps) {
   if (!visible) {
@@ -71,17 +60,6 @@ export function AboutModal({
             bun, sqlite, ersatztv and jellyfin.
           </p>
           <p className="mt-3 text-zinc-400">
-            need a quick health check? visit the{' '}
-            <a
-              href="/status"
-              className="text-[#73daca] underline decoration-dashed underline-offset-4 transition hover:text-[#a6f3d1]"
-            >
-              public status page
-            </a>
-            .
-          </p>
-
-          <p className="mt-3 text-zinc-400">
             <a
               href="https://github.com/chriscorbell/andromedatv"
               target="_blank"
@@ -104,13 +82,6 @@ export function AboutModal({
               </svg>
             </a>
           </p>
-
-          <SystemStatusPanel
-            error={diagnosticsError}
-            loading={diagnosticsLoading}
-            onRetry={onRetryDiagnostics}
-            status={diagnosticsStatus}
-          />
         </div>
       </div>
     </div>
