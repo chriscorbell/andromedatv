@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { api } from '../lib/api'
 import type {
   AdminAction,
   AdminConfirmReturnView,
@@ -6,8 +7,6 @@ import type {
   AdminMessageActionTarget,
   AdminUser,
 } from '../types/admin'
-
-const CHAT_API_URL = '/api/chat'
 
 type UseAdminControlsOptions = {
   authIsAdmin: boolean
@@ -114,11 +113,7 @@ export function useAdminControls({
     setAdminUserLoading(true)
     try {
       const endpoint = view === 'active' ? 'active' : 'banned'
-      const response = await fetch(`${CHAT_API_URL}/admin/users/${endpoint}`, {
-        headers: {
-          Authorization: `Bearer ${authToken}`,
-        },
-      })
+      const { data, response } = await api.admin.getUsers(endpoint, authToken)
 
       if (!response.ok) {
         if (response.status === 401 || response.status === 403) {
@@ -130,8 +125,7 @@ export function useAdminControls({
         return
       }
 
-      const payload = (await response.json()) as { users: AdminUser[] }
-      setAdminUserList(payload.users)
+      setAdminUserList(data.users)
     } catch (error) {
       console.warn('Failed to fetch admin users', error)
       setChatError('Failed to load user list.')
@@ -160,16 +154,9 @@ export function useAdminControls({
       return
     }
 
-    const adminHeaders = {
-      Authorization: `Bearer ${authToken}`,
-    }
-
     try {
       if (action.kind === 'clear') {
-        const response = await fetch(`${CHAT_API_URL}/admin/clear`, {
-          method: 'POST',
-          headers: adminHeaders,
-        })
+        const { response } = await api.admin.clear(authToken)
 
         if (!response.ok) {
           if (response.status === 401 || response.status === 403) {
@@ -185,13 +172,7 @@ export function useAdminControls({
       }
 
       if (action.kind === 'delete') {
-        const response = await fetch(
-          `${CHAT_API_URL}/admin/messages/${action.messageId}/delete`,
-          {
-            method: 'POST',
-            headers: adminHeaders,
-          },
-        )
+        const { response } = await api.admin.deleteMessage(action.messageId, authToken)
 
         if (!response.ok) {
           if (response.status === 401 || response.status === 403) {
@@ -208,13 +189,7 @@ export function useAdminControls({
       }
 
       if (action.kind === 'warn') {
-        const response = await fetch(
-          `${CHAT_API_URL}/admin/messages/${action.messageId}/warn`,
-          {
-            method: 'POST',
-            headers: adminHeaders,
-          },
-        )
+        const { response } = await api.admin.warnUser(action.messageId, authToken)
 
         if (!response.ok) {
           if (response.status === 401 || response.status === 403) {
@@ -231,13 +206,7 @@ export function useAdminControls({
       }
 
       if (action.kind === 'ban') {
-        const response = await fetch(
-          `${CHAT_API_URL}/admin/users/${encodeURIComponent(action.nickname)}/ban`,
-          {
-            method: 'POST',
-            headers: adminHeaders,
-          },
-        )
+        const { response } = await api.admin.banUser(action.nickname, authToken)
 
         if (!response.ok) {
           if (response.status === 401 || response.status === 403) {
@@ -254,13 +223,7 @@ export function useAdminControls({
       }
 
       if (action.kind === 'unban') {
-        const response = await fetch(
-          `${CHAT_API_URL}/admin/users/${encodeURIComponent(action.nickname)}/unban`,
-          {
-            method: 'POST',
-            headers: adminHeaders,
-          },
-        )
+        const { response } = await api.admin.unbanUser(action.nickname, authToken)
 
         if (!response.ok) {
           if (response.status === 401 || response.status === 403) {
@@ -275,13 +238,7 @@ export function useAdminControls({
         return
       }
 
-      const response = await fetch(
-        `${CHAT_API_URL}/admin/users/${encodeURIComponent(action.nickname)}`,
-        {
-          method: 'DELETE',
-          headers: adminHeaders,
-        },
-      )
+      const { response } = await api.admin.deleteUser(action.nickname, authToken)
 
       if (!response.ok) {
         if (response.status === 401 || response.status === 403) {

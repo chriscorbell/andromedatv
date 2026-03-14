@@ -1,15 +1,14 @@
 import { useEffect, useEffectEvent, useRef, useState } from 'react'
+import {
+  api,
+  type ChatAuthPayload,
+  type ChatMessage,
+  type ChatMessagesPayload,
+  type ChatMutationErrorPayload,
+  type ChatPublicMessagesPayload,
+} from '../lib/api'
 
-const CHAT_API_URL = '/api/chat'
 const CHAT_STORAGE_KEY = 'andromeda-chat-auth'
-
-export type ChatMessage = {
-  id: number
-  nickname: string
-  body: string
-  created_at: string
-  is_admin?: boolean
-}
 
 export function useChat() {
   const chatScrollRef = useRef<HTMLDivElement | null>(null)
@@ -45,9 +44,7 @@ export function useChat() {
     }
     window.localStorage.removeItem(CHAT_STORAGE_KEY)
     if (notifyServer) {
-      void fetch(`${CHAT_API_URL}/auth/logout`, {
-        method: 'POST',
-      }).catch((error) => {
+      void api.chat.logout().catch((error) => {
         console.warn('Failed to clear chat session cookie', error)
       })
     }
@@ -179,11 +176,7 @@ export function useChat() {
     setChatError(null)
 
     try {
-      const response = await fetch(`${CHAT_API_URL}/messages`, {
-        headers: {
-          Authorization: `Bearer ${authToken}`,
-        },
-      })
+      const { data, response } = await api.chat.getMessages(authToken)
 
       if (response.status === 401) {
         clearAuth()
@@ -199,13 +192,7 @@ export function useChat() {
         throw new Error('Failed to load messages')
       }
 
-      const payload = (await response.json()) as {
-        messages: ChatMessage[]
-        user?: {
-          nickname: string
-          isAdmin: boolean
-        }
-      }
+      const payload = data as ChatMessagesPayload
       setChatMessages(payload.messages)
       if (payload.user) {
         setAuthNickname(payload.user.nickname)
@@ -234,12 +221,12 @@ export function useChat() {
     setChatError(null)
 
     try {
-      const response = await fetch(`${CHAT_API_URL}/messages/public`)
+      const { data, response } = await api.chat.getPublicMessages()
       if (!response.ok) {
         throw new Error('Failed to load public messages')
       }
 
-      const payload = (await response.json()) as { messages: ChatMessage[] }
+      const payload = data as ChatPublicMessagesPayload
       setChatMessages(payload.messages)
     } catch (error) {
       console.warn('Failed to load public chat messages', error)
@@ -278,11 +265,7 @@ export function useChat() {
         chatStreamRef.current = null
       }
       void fetchPublicMessages()
-      const publicStreamUrl = new URL(
-        `${CHAT_API_URL}/messages/public/stream`,
-        window.location.origin,
-      )
-      const publicStream = new EventSource(publicStreamUrl.toString())
+      const publicStream = new EventSource(api.chat.publicStreamUrl())
       chatStreamRef.current = publicStream
       attachChatStreamHandlers(publicStream, {
         includePrivateEvents: false,
@@ -306,8 +289,7 @@ export function useChat() {
         return
       }
 
-      const streamUrl = new URL(`${CHAT_API_URL}/messages/stream`, window.location.origin)
-      stream = new EventSource(streamUrl.toString())
+      stream = new EventSource(api.chat.privateStreamUrl())
       chatStreamRef.current = stream
       attachChatStreamHandlers(stream, {
         includePrivateEvents: true,
@@ -370,44 +352,30 @@ export function useChat() {
     setAuthLoading(true)
 
     try {
-      const response = await fetch(
-        `${CHAT_API_URL}/auth/${authMode === 'login' ? 'login' : 'register'}`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            nickname: authNicknameInput.trim(),
-            password: authPasswordInput,
-          }),
-        },
+      const { data: payload, response } = await api.chat.submitAuth(
+        authMode,
+        authNicknameInput.trim(),
+        authPasswordInput,
       )
+      const parsedPayload = payload as ChatAuthPayload
 
-      const payload = (await response.json()) as {
-        nickname?: string
-        token?: string
-        isAdmin?: boolean
-        error?: string
-      }
-
-      if (!response.ok || !payload.token || !payload.nickname) {
-        setAuthError(payload.error || 'Unable to sign in. Check your details.')
+      if (!response.ok || !parsedPayload.token || !parsedPayload.nickname) {
+        setAuthError(parsedPayload.error || 'Unable to sign in. Check your details.')
         return
       }
 
-      setAuthToken(payload.token)
-      setAuthNickname(payload.nickname)
-      setAuthIsAdmin(Boolean(payload.isAdmin))
+      setAuthToken(parsedPayload.token)
+      setAuthNickname(parsedPayload.nickname)
+      setAuthIsAdmin(Boolean(parsedPayload.isAdmin))
       setAuthPasswordInput('')
       setMessageBody('')
       setChatNotice(null)
       window.localStorage.setItem(
         CHAT_STORAGE_KEY,
         JSON.stringify({
-          nickname: payload.nickname,
-          token: payload.token,
-          isAdmin: Boolean(payload.isAdmin),
+          nickname: parsedPayload.nickname,
+          token: parsedPayload.token,
+          isAdmin: Boolean(parsedPayload.isAdmin),
         }),
       )
     } catch (error) {
@@ -437,37 +405,30 @@ export function useChat() {
     setChatError(null)
 
     try {
-      const response = await fetch(`${CHAT_API_URL}/messages`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
-        body: JSON.stringify({ body: trimmed }),
-      })
+      const { data: payload, response } = await api.chat.sendMessage(
+        authToken,
+        trimmed,
+      )
 
       if (response.status === 401) {
         clearAuth()
         return
       }
 
-      const payload = (await response.json()) as {
-        error?: string
-        cooldownSeconds?: number
-      }
+      const parsedPayload = payload as ChatMutationErrorPayload
 
       if (!response.ok) {
         if (response.status === 403) {
           clearAuth()
-          setChatError(payload.error || 'your account has been banned')
+          setChatError(parsedPayload.error || 'your account has been banned')
           return
         }
-        if (response.status === 429 && payload.cooldownSeconds) {
-          setCooldownUntil(Date.now() + payload.cooldownSeconds * 1000)
-          setChatError(payload.error || "slow down, don't spam!")
+        if (response.status === 429 && parsedPayload.cooldownSeconds) {
+          setCooldownUntil(Date.now() + parsedPayload.cooldownSeconds * 1000)
+          setChatError(parsedPayload.error || "slow down, don't spam!")
           return
         }
-        setChatError(payload.error || 'Message failed to send.')
+        setChatError(parsedPayload.error || 'Message failed to send.')
         return
       }
 

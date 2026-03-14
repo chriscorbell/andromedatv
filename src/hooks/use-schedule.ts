@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { api } from '../lib/api'
 import type { ScheduleItem } from '../types/schedule'
 
 const fallbackSchedule: ScheduleItem[] = [
@@ -29,22 +30,17 @@ export function useSchedule() {
 
     const loadSchedule = async () => {
       try {
-        const response = await fetch('/api/schedule')
+        const { data, response } = await api.schedule.get()
         if (!response.ok) {
           throw new Error('Failed to load normalized schedule')
         }
 
-        const payload = (await response.json()) as {
-          refreshAfterMs?: number
-          schedule?: ScheduleItem[]
-        }
-
-        if (!cancelled && payload.schedule?.length) {
-          setSchedule(payload.schedule)
+        if (!cancelled && data.schedule?.length) {
+          setSchedule(data.schedule)
         }
 
         const nextRefreshMs = Math.min(
-          Math.max(payload.refreshAfterMs ?? 60_000, 15_000),
+          Math.max(data.refreshAfterMs ?? 60_000, 15_000),
           5 * 60_000,
         )
         if (!cancelled) {

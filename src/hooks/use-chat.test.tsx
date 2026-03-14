@@ -90,7 +90,10 @@ describe('useChat', () => {
       expect(result.current.chatMessages).toHaveLength(1)
     })
 
-    expect(fetchMock).toHaveBeenCalledWith('/api/chat/messages/public')
+    expect(fetchMock).toHaveBeenCalledWith('/api/chat/messages/public', {
+      headers: {},
+      method: undefined,
+    })
     expect(MockEventSource.instances).toHaveLength(1)
     expect(MockEventSource.instances[0]?.url).toBe(
       `${window.location.origin}/api/chat/messages/public/stream`,
@@ -196,7 +199,10 @@ describe('useChat', () => {
     expect(fetchMock).toHaveBeenNthCalledWith(
       3,
       '/api/chat/auth/logout',
-      { method: 'POST' },
+      {
+        headers: {},
+        method: 'POST',
+      },
     )
     expect(MockEventSource.instances[1]?.closed).toBe(true)
     expect(MockEventSource.instances.at(-1)?.url).toBe(
