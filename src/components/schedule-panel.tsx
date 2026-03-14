@@ -1,17 +1,24 @@
 import { ScheduleClock } from './schedule-clock'
+import { ServiceStatusBanner } from './service-status-banner'
 import type { ScheduleItem } from '../types/schedule'
 
 type SchedulePanelProps = {
   expandedScheduleKey: string | null
   onToggleItem: (itemKey: string) => void
+  onRetrySchedule: () => void
   schedule: ScheduleItem[]
+  scheduleState: 'loading' | 'ready' | 'refreshing' | 'stale' | 'offline'
+  scheduleStatusDetail: string
   syncTitleTooltip: (target: HTMLSpanElement) => void
 }
 
 export function SchedulePanel({
   expandedScheduleKey,
   onToggleItem,
+  onRetrySchedule,
   schedule,
+  scheduleState,
+  scheduleStatusDetail,
   syncTitleTooltip,
 }: SchedulePanelProps) {
   return (
@@ -20,6 +27,22 @@ export function SchedulePanel({
         <span className="ui-header font-extrabold">schedule</span>
         <ScheduleClock />
       </header>
+      {scheduleState !== 'ready' && (
+        <ServiceStatusBanner
+          detail={scheduleStatusDetail}
+          label="schedule sync"
+          onRetry={
+            scheduleState === 'loading' ? undefined : onRetrySchedule
+          }
+          state={
+            scheduleState === 'loading'
+              ? 'connecting'
+              : scheduleState === 'refreshing'
+                ? 'refreshing'
+                : scheduleState
+          }
+        />
+      )}
       <div className="scrollbar-minimal min-h-0 flex-1 overflow-y-auto">
         <ul className="divide-y divide-zinc-800">
           {schedule.map((item) => {

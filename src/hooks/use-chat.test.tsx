@@ -100,6 +100,7 @@ describe('useChat', () => {
     )
 
     act(() => {
+      MockEventSource.instances[0]?.emit('ready')
       MockEventSource.instances[0]?.emit('message', {
         id: 2,
         nickname: 'viewer1',
@@ -109,9 +110,22 @@ describe('useChat', () => {
     })
 
     await waitFor(() => {
-      expect(result.current.chatMessages).toHaveLength(2)
+      expect(result.current.chatConnectionState).toBe('live')
     })
-    expect(result.current.chatMessages[1]?.body).toBe('hello there')
+
+    act(() => {
+      MockEventSource.instances[0]?.emit('message', {
+        id: 3,
+        nickname: 'viewer1',
+        body: 'hello there',
+        created_at: '2026-03-14T12:00:02.000Z',
+      })
+    })
+
+    await waitFor(() => {
+      expect(result.current.chatMessages).toHaveLength(3)
+    })
+    expect(result.current.chatMessages[2]?.body).toBe('hello there')
   })
 
   it('restores stored auth, opens a private stream, and clears auth on ban', async () => {
@@ -208,5 +222,43 @@ describe('useChat', () => {
     expect(MockEventSource.instances.at(-1)?.url).toBe(
       `${window.location.origin}/api/chat/messages/public/stream`,
     )
+  })
+
+  it('surfaces offline chat state after repeated stream errors and supports manual retry', async () => {
+    const fetchMock = vi.mocked(fetch)
+    fetchMock.mockImplementation(() =>
+      createJsonResponse({
+        json: {
+          messages: [],
+        },
+      }),
+    )
+
+    const { result } = renderHook(() => useChat())
+
+    await waitFor(() => {
+      expect(MockEventSource.instances).toHaveLength(1)
+    })
+
+    act(() => {
+      MockEventSource.instances[0]?.emit('error')
+      MockEventSource.instances[0]?.emit('error')
+      MockEventSource.instances[0]?.emit('error')
+    })
+
+    await waitFor(() => {
+      expect(result.current.chatConnectionState).toBe('offline')
+      expect(result.current.chatConnectionDetail).toContain('unavailable')
+    })
+
+    act(() => {
+      result.current.retryChatConnection()
+    })
+
+    await waitFor(() => {
+      expect(MockEventSource.instances).toHaveLength(2)
+    })
+    expect(MockEventSource.instances[0]?.closed).toBe(true)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 })

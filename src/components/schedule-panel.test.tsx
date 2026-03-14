@@ -17,6 +17,7 @@ describe('SchedulePanel', () => {
       <SchedulePanel
         expandedScheduleKey="Angel Cop-live"
         onToggleItem={handleToggle}
+        onRetrySchedule={vi.fn()}
         schedule={[
           {
             title: 'Angel Cop',
@@ -30,6 +31,8 @@ describe('SchedulePanel', () => {
             time: '8:30 PM - 9:00 PM',
           },
         ]}
+        scheduleState="ready"
+        scheduleStatusDetail="Schedule is up to date."
         syncTitleTooltip={handleTooltipSync}
       />,
     )
@@ -55,6 +58,7 @@ describe('SchedulePanel', () => {
       <SchedulePanel
         expandedScheduleKey={null}
         onToggleItem={vi.fn()}
+        onRetrySchedule={vi.fn()}
         schedule={[
           {
             title: 'Bubblegum Crisis',
@@ -62,6 +66,8 @@ describe('SchedulePanel', () => {
             description: 'Classic OVA',
           },
         ]}
+        scheduleState="ready"
+        scheduleStatusDetail="Schedule is up to date."
         syncTitleTooltip={handleTooltipSync}
       />,
     )
@@ -69,5 +75,35 @@ describe('SchedulePanel', () => {
     fireEvent.mouseEnter(screen.getByText('Bubblegum Crisis'))
     expect(handleTooltipSync).toHaveBeenCalledTimes(1)
     expect(handleTooltipSync.mock.calls[0]?.[0]).toBeInstanceOf(HTMLSpanElement)
+  })
+
+  it('shows degraded schedule status and supports manual retry', () => {
+    const handleRetry = vi.fn()
+
+    render(
+      <SchedulePanel
+        expandedScheduleKey={null}
+        onToggleItem={vi.fn()}
+        onRetrySchedule={handleRetry}
+        schedule={[
+          {
+            title: 'Angel Cop',
+            time: 'LIVE',
+            live: true,
+          },
+        ]}
+        scheduleState="offline"
+        scheduleStatusDetail="Unable to load the schedule yet. Retrying automatically..."
+        syncTitleTooltip={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByRole('alert')).toHaveTextContent('Unavailable')
+    expect(
+      screen.getByText('Unable to load the schedule yet. Retrying automatically...'),
+    ).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry now' }))
+    expect(handleRetry).toHaveBeenCalledTimes(1)
   })
 })

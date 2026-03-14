@@ -6,6 +6,7 @@ const HLS_WARMUP_DELAY_MS = 150
 
 type HlsCtor = typeof import('hls.js').default
 type IdleCallbackHandle = number
+type PlaybackState = 'connecting' | 'live' | 'reconnecting' | 'offline'
 
 let cachedHlsCtor: HlsCtor | null = null
 let cachedHlsCtorPromise: Promise<HlsCtor | null> | null = null
@@ -46,9 +47,14 @@ export function useVideoPlayer() {
   const hlsRestartTimeoutRef = useRef<number | null>(null)
   const playbackRetryTimeoutRef = useRef<number | null>(null)
   const hideTimeoutRef = useRef<number | null>(null)
+  const forcePlaybackRecoveryRef = useRef<() => void>(() => {})
   const [isMuted, setIsMuted] = useState(true)
   const [volume, setVolume] = useState(0.6)
   const [controlsVisible, setControlsVisible] = useState(false)
+  const [playbackState, setPlaybackState] = useState<PlaybackState>('connecting')
+  const [playbackStatusDetail, setPlaybackStatusDetail] = useState(
+    'Connecting to live stream...',
+  )
 
   useEffect(() => {
     const video = videoRef.current
@@ -88,12 +94,43 @@ export function useVideoPlayer() {
     let startupRestartTimeout: number | null = null
     let lastPlaybackTime = 0
     let stalledChecks = 0
+    let recoveryAttempts = 0
     let manifestLoaded = false
     let playbackStarted = false
+    let playbackStartedOnce = false
     let disposed = false
     let hlsSupportKnown = supportsNativeHls
     let warmupTimeoutId: number | null = null
     let warmupIdleHandle: IdleCallbackHandle | null = null
+
+    const setPlaybackUiState = (
+      nextState: PlaybackState,
+      detail: string,
+    ) => {
+      setPlaybackState((current) =>
+        current === nextState ? current : nextState,
+      )
+      setPlaybackStatusDetail((current) =>
+        current === detail ? current : detail,
+      )
+    }
+
+    const markConnecting = (detail = 'Connecting to live stream...') => {
+      setPlaybackUiState('connecting', detail)
+    }
+
+    const markRecovering = (
+      detail = 'Reconnecting to the live stream...',
+    ) => {
+      setPlaybackUiState(
+        playbackStartedOnce ? 'reconnecting' : 'connecting',
+        detail,
+      )
+    }
+
+    const markOffline = (detail = 'Stream unavailable. Still retrying...') => {
+      setPlaybackUiState('offline', detail)
+    }
 
     const clearStartupRestartTimer = () => {
       if (startupRestartTimeout) {
@@ -118,6 +155,12 @@ export function useVideoPlayer() {
     const scheduleStartupRestart = (delay = 12_000) => {
       if (!supportsNativeHls && !hlsSupportKnown) {
         return
+      }
+
+      if (playbackStartedOnce) {
+        markRecovering('The stream is taking longer than expected. Retrying...')
+      } else {
+        markConnecting('Connecting to live stream...')
       }
 
       clearStartupRestartTimer()
@@ -148,6 +191,13 @@ export function useVideoPlayer() {
       manifestLoaded = true
       stalledChecks = 0
       lastPlaybackTime = video.currentTime
+      if (!playbackStarted) {
+        markRecovering(
+          playbackStartedOnce
+            ? 'Buffering the live stream...'
+            : 'Connecting to live stream...',
+        )
+      }
 
       if (video.paused) {
         schedulePlaybackRetry(0)
@@ -158,15 +208,25 @@ export function useVideoPlayer() {
     }
 
     const handlePlaying = () => {
+      recoveryAttempts = 0
       playbackStarted = true
+      playbackStartedOnce = true
       manifestLoaded = true
       stalledChecks = 0
       lastPlaybackTime = video.currentTime
+      setPlaybackUiState('live', 'Live now')
       clearPlaybackRetryTimer()
       clearStartupRestartTimer()
     }
 
     const restartStream = async (delay = 1500) => {
+      recoveryAttempts += 1
+      if (recoveryAttempts >= 3) {
+        markOffline('Stream unavailable. Retrying automatically...')
+      } else {
+        markRecovering('Reconnecting to the live stream...')
+      }
+
       clearRestartTimer()
       clearStartupRestartTimer()
       hlsRestartTimeoutRef.current = window.setTimeout(() => {
@@ -182,6 +242,11 @@ export function useVideoPlayer() {
     const startNativeStream = () => {
       playbackStarted = false
       manifestLoaded = false
+      if (playbackStartedOnce) {
+        markRecovering('Reconnecting to the live stream...')
+      } else {
+        markConnecting('Connecting to live stream...')
+      }
       clearRestartTimer()
       clearStartupRestartTimer()
       destroyHls()
@@ -195,6 +260,11 @@ export function useVideoPlayer() {
     const startHls = async () => {
       playbackStarted = false
       manifestLoaded = false
+      if (playbackStartedOnce) {
+        markRecovering('Reconnecting to the live stream...')
+      } else {
+        markConnecting('Connecting to live stream...')
+      }
       clearStartupRestartTimer()
       destroyHls()
 
@@ -252,6 +322,7 @@ export function useVideoPlayer() {
             return
           }
 
+          markRecovering('Lost contact with the stream. Reconnecting...')
           hls.startLoad()
           schedulePlaybackRetry(500)
           scheduleStartupRestart(8000)
@@ -264,6 +335,7 @@ export function useVideoPlayer() {
             return
           }
 
+          markRecovering('Trying to recover video playback...')
           recoveryInProgress = true
           hls.recoverMediaError()
           schedulePlaybackRetry(250)
@@ -288,6 +360,13 @@ export function useVideoPlayer() {
     }
 
     const nudgePlayback = () => {
+      if (!video.paused || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+        markRecovering(
+          playbackStartedOnce
+            ? 'Playback stalled. Reconnecting...'
+            : 'Connecting to live stream...',
+        )
+      }
       if (hlsRef.current) {
         hlsRef.current.startLoad()
       }
@@ -311,6 +390,21 @@ export function useVideoPlayer() {
       if (document.visibilityState === 'visible' && video.paused) {
         nudgePlayback()
       }
+    }
+
+    forcePlaybackRecoveryRef.current = () => {
+      recoveryAttempts = 0
+      markRecovering('Retrying the live stream...')
+      clearRestartTimer()
+      clearPlaybackRetryTimer()
+      clearStartupRestartTimer()
+
+      if (supportsNativeHls) {
+        startNativeStream()
+        return
+      }
+
+      void startHls()
     }
 
     video.addEventListener('loadedmetadata', handleReady)
@@ -395,6 +489,7 @@ export function useVideoPlayer() {
       if (warmupIdleHandle !== null && window.cancelIdleCallback) {
         window.cancelIdleCallback(warmupIdleHandle)
       }
+      forcePlaybackRecoveryRef.current = () => {}
       destroyHls()
       video.removeAttribute('src')
       video.load()
@@ -470,12 +565,20 @@ export function useVideoPlayer() {
     }, 600)
   }
 
+  const handleRetryPlayback = () => {
+    forcePlaybackRecoveryRef.current()
+    showControls()
+  }
+
   return {
     controlsVisible,
     handleFullscreen,
+    handleRetryPlayback,
     handleToggleMute,
     handleVolumeChange,
     isMuted,
+    playbackState,
+    playbackStatusDetail,
     scheduleHideControls,
     showControls,
     videoFrameRef,

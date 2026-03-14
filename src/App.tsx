@@ -5,6 +5,7 @@ import { ChatAuthForm } from './components/chat-auth-form'
 import { ChatComposer } from './components/chat-composer'
 import { ChatMessageList } from './components/chat-message-list'
 import { SchedulePanel } from './components/schedule-panel'
+import { ServiceStatusBanner } from './components/service-status-banner'
 import { VideoPlayer } from './components/video-player'
 import { useAdminControls } from './hooks/use-admin-controls'
 import { useChat } from './hooks/use-chat'
@@ -26,6 +27,8 @@ function App() {
     authNicknameInput,
     authPasswordInput,
     authToken,
+    chatConnectionDetail,
+    chatConnectionState,
     chatError,
     chatInputRef,
     chatLoading,
@@ -41,6 +44,7 @@ function App() {
     redactMessagesByNickname,
     removeMessagesByNickname,
     replaceDeletedMessage,
+    retryChatConnection,
     setAuthNicknameInput,
     setAuthPasswordInput,
     setChatError,
@@ -74,9 +78,12 @@ function App() {
   const {
     controlsVisible,
     handleFullscreen,
+    handleRetryPlayback,
     handleToggleMute,
     handleVolumeChange,
     isMuted,
+    playbackState,
+    playbackStatusDetail,
     scheduleHideControls,
     showControls,
     videoFrameRef,
@@ -85,7 +92,10 @@ function App() {
   } = useVideoPlayer()
   const {
     expandedScheduleKey,
+    retrySchedule,
     schedule,
+    scheduleState,
+    scheduleStatusDetail,
     syncScheduleTitleTooltip,
     toggleScheduleItem,
   } = useSchedule()
@@ -185,8 +195,11 @@ function App() {
             onMouseEnter={showControls}
             onMouseLeave={scheduleHideControls}
             onMouseMove={showControls}
+            onRetryPlayback={handleRetryPlayback}
             onToggleMute={handleToggleMute}
             onVolumeChange={handleVolumeChange}
+            playbackState={playbackState}
+            playbackStatusDetail={playbackStatusDetail}
             videoFrameRef={videoFrameRef}
             videoRef={videoRef}
             volume={volume}
@@ -196,7 +209,10 @@ function App() {
             <SchedulePanel
               expandedScheduleKey={expandedScheduleKey}
               onToggleItem={toggleScheduleItem}
+              onRetrySchedule={retrySchedule}
               schedule={schedule}
+              scheduleState={scheduleState}
+              scheduleStatusDetail={scheduleStatusDetail}
               syncTitleTooltip={syncScheduleTitleTooltip}
             />
 
@@ -209,6 +225,18 @@ function App() {
                   </span>
                 )}
               </header>
+              {chatConnectionState !== 'live' && (
+                <ServiceStatusBanner
+                  detail={chatConnectionDetail}
+                  label="chat status"
+                  onRetry={
+                    chatConnectionState === 'connecting'
+                      ? undefined
+                      : retryChatConnection
+                  }
+                  state={chatConnectionState}
+                />
+              )}
               {authToken ? (
                 <>
                   <div
