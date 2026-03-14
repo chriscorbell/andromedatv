@@ -1,3 +1,4 @@
+import { useId } from 'react'
 import type { FormEventHandler } from 'react'
 
 type ChatAuthFormProps = {
@@ -27,31 +28,63 @@ export function ChatAuthForm({
   onSubmit,
   password,
 }: ChatAuthFormProps) {
+  const titleId = useId()
+  const nicknameId = useId()
+  const passwordId = useId()
+  const statusId = useId()
+  const errorId = useId()
+  const describedBy = [
+    chatError ? statusId : null,
+    authError ? errorId : null,
+  ].filter(Boolean).join(' ') || undefined
+
   return (
     <form
       key={authMode}
       onSubmit={onSubmit}
       className="flex flex-col gap-3 border-t border-zinc-800 px-4 py-4 animate-[fadeIn_220ms_ease-out] motion-reduce:animate-none"
+      aria-labelledby={titleId}
     >
-      <div className="text-zinc-400">
+      <div id={titleId} className="text-zinc-400">
         {authMode === 'login' ? 'sign in to chat' : 'create an account'}
       </div>
       {chatError && (
-        <div className="text-[var(--color-accent-red)]">
+        <div
+          id={statusId}
+          className="text-[var(--color-accent-red)]"
+          role="status"
+          aria-live="polite"
+        >
           {chatError}
         </div>
       )}
+      <label htmlFor={nicknameId} className="sr-only">
+        Username
+      </label>
       <input
+        id={nicknameId}
         value={nickname}
         onChange={(event) => onNicknameChange(event.target.value)}
         placeholder="username"
+        autoComplete="username"
+        aria-invalid={Boolean(authError)}
+        aria-describedby={describedBy}
         className="h-9 border border-zinc-700 bg-black/40 px-3 text-zinc-100 placeholder:text-zinc-600 focus:border-zinc-500 focus:outline-none"
       />
+      <label htmlFor={passwordId} className="sr-only">
+        Password
+      </label>
       <input
+        id={passwordId}
         type="password"
         value={password}
         onChange={(event) => onPasswordChange(event.target.value)}
         placeholder="password"
+        autoComplete={
+          authMode === 'login' ? 'current-password' : 'new-password'
+        }
+        aria-invalid={Boolean(authError)}
+        aria-describedby={describedBy}
         className="h-9 border border-zinc-700 bg-black/40 px-3 text-zinc-100 placeholder:text-zinc-600 focus:border-zinc-500 focus:outline-none"
       />
       <button
@@ -66,10 +99,18 @@ export function ChatAuthForm({
             : 'create account'}
       </button>
       {authError && (
-        <div className="text-[var(--color-accent-red)]">{authError}</div>
+        <div
+          id={errorId}
+          className="text-[var(--color-accent-red)]"
+          role="alert"
+        >
+          {authError}
+        </div>
       )}
       {chatLoading && (
-        <div className="text-zinc-500">updating…</div>
+        <div className="text-zinc-500" role="status" aria-live="polite">
+          updating…
+        </div>
       )}
       <button
         type="button"

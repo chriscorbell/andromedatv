@@ -1,3 +1,4 @@
+import { useId } from 'react'
 import type { FormEventHandler, RefObject } from 'react'
 
 type ChatComposerProps = {
@@ -29,18 +30,37 @@ export function ChatComposer({
   onSubmit,
   textareaRef,
 }: ChatComposerProps) {
+  const messageId = useId()
+  const noticeId = useId()
+  const errorId = useId()
+  const loadingId = useId()
+  const describedBy = [
+    chatNotice ? noticeId : null,
+    chatError ? errorId : null,
+    chatLoading ? loadingId : null,
+  ].filter(Boolean).join(' ') || undefined
+
   return (
     <form
       onSubmit={onSubmit}
       className="border-t border-zinc-800 px-4 py-3"
     >
       {chatNotice && (
-        <div className="mb-2 text-[var(--color-accent-red)]">
+        <div
+          id={noticeId}
+          className="mb-2 text-[var(--color-accent-red)]"
+          role="status"
+          aria-live="polite"
+        >
           {chatNotice}
         </div>
       )}
       <div className="flex items-end gap-2">
+        <label htmlFor={messageId} className="sr-only">
+          Chat message
+        </label>
         <textarea
+          id={messageId}
           ref={textareaRef}
           value={messageBody}
           onChange={(event) => {
@@ -79,6 +99,8 @@ export function ChatComposer({
           placeholder="Type a message"
           disabled={disabled}
           rows={1}
+          aria-invalid={Boolean(chatError)}
+          aria-describedby={describedBy}
           className="max-h-64 min-h-9 flex-1 resize-none overflow-hidden border border-zinc-700 bg-black/40 px-3 py-2 text-zinc-100 placeholder:text-zinc-600 focus:border-zinc-500 focus:outline-none disabled:opacity-60"
         />
         <button
@@ -90,7 +112,11 @@ export function ChatComposer({
         </button>
       </div>
       {chatError && (
-        <div className="mt-2 text-[var(--color-accent-red)]">
+        <div
+          id={errorId}
+          className="mt-2 text-[var(--color-accent-red)]"
+          role="alert"
+        >
           {chatError}
           {cooldownRemaining !== null && (
             <span className="ml-1 text-[var(--color-accent-red)]">
@@ -100,7 +126,14 @@ export function ChatComposer({
         </div>
       )}
       {chatLoading && (
-        <div className="mt-2 text-zinc-500">updating…</div>
+        <div
+          id={loadingId}
+          className="mt-2 text-zinc-500"
+          role="status"
+          aria-live="polite"
+        >
+          updating…
+        </div>
       )}
       <div className="mt-2 flex items-center justify-between text-zinc-500">
         <button

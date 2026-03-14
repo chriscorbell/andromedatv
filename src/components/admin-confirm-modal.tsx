@@ -1,3 +1,6 @@
+import { useId, useRef } from 'react'
+import { useDialogFocus } from '../hooks/use-dialog-focus'
+
 type AdminConfirmModalProps = {
   active: boolean
   body: string
@@ -15,6 +18,11 @@ export function AdminConfirmModal({
   title,
   visible,
 }: AdminConfirmModalProps) {
+  const titleId = useId()
+  const bodyId = useId()
+  const cancelButtonRef = useRef<HTMLButtonElement | null>(null)
+  const dialogRef = useDialogFocus<HTMLDivElement>(active, cancelButtonRef)
+
   if (!visible) {
     return null
   }
@@ -25,16 +33,23 @@ export function AdminConfirmModal({
       onClick={onCancel}
     >
       <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={body ? bodyId : undefined}
+        tabIndex={-1}
         className={`w-full max-w-md border border-zinc-800 bg-[#050505] p-6 text-zinc-200 shadow-xl transition duration-200 ${active ? 'translate-y-0 scale-100 opacity-100' : 'translate-y-2 scale-95 opacity-0'}`}
         onClick={(event) => event.stopPropagation()}
       >
         <div className="ui-header font-extrabold">confirm</div>
-        <p className="mt-3 text-zinc-400">{title}</p>
+        <p id={titleId} className="mt-3 text-zinc-400">{title}</p>
         {body && (
-          <p className="mt-2 text-zinc-500">{body}</p>
+          <p id={bodyId} className="mt-2 text-zinc-500">{body}</p>
         )}
         <div className="mt-4 flex items-center justify-end gap-3">
           <button
+            ref={cancelButtonRef}
             type="button"
             className="text-zinc-400 transition hover:text-zinc-100 cursor-pointer"
             onClick={onCancel}

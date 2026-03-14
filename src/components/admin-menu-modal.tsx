@@ -1,3 +1,5 @@
+import { useId, useRef } from 'react'
+import { useDialogFocus } from '../hooks/use-dialog-focus'
 import type { AdminAction, AdminMenuView, AdminUser } from '../types/admin'
 
 type AdminMenuModalProps = {
@@ -31,6 +33,15 @@ export function AdminMenuModal({
   viewAnimating,
   visible,
 }: AdminMenuModalProps) {
+  const titleId = useId()
+  const descriptionId = useId()
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null)
+  const searchInputRef = useRef<HTMLInputElement | null>(null)
+  const dialogRef = useDialogFocus<HTMLDivElement>(
+    active,
+    view === 'main' ? closeButtonRef : searchInputRef,
+  )
+
   if (!visible) {
     return null
   }
@@ -46,6 +57,12 @@ export function AdminMenuModal({
       onClick={onClose}
     >
       <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={descriptionId}
+        tabIndex={-1}
         className={`w-full max-w-md border border-zinc-800 bg-[#050505] text-zinc-200 shadow-xl transition duration-200 ${active ? 'translate-y-0 scale-100 opacity-100' : 'translate-y-2 scale-95 opacity-0'}`}
         onClick={(event) => event.stopPropagation()}
       >
@@ -53,8 +70,9 @@ export function AdminMenuModal({
           {view === 'main' && (
             <div className="p-6">
               <div className="flex items-start justify-between gap-4">
-                <div className="ui-header font-extrabold">admin</div>
+                <div id={titleId} className="ui-header font-extrabold">admin</div>
                 <button
+                  ref={closeButtonRef}
                   type="button"
                   className="inline-flex h-6 w-6 items-center justify-center text-zinc-500 transition hover:text-zinc-200 cursor-pointer"
                   onClick={onClose}
@@ -75,6 +93,9 @@ export function AdminMenuModal({
                   </svg>
                 </button>
               </div>
+              <p id={descriptionId} className="mt-3 text-sm text-zinc-500">
+                manage chat moderation tools and user actions.
+              </p>
               <div className="mt-4 flex flex-col gap-2">
                 <button
                   type="button"
@@ -112,10 +133,11 @@ export function AdminMenuModal({
                 >
                   ←
                 </button>
-                <div className="ui-header font-extrabold">
+                <div id={titleId} className="ui-header font-extrabold">
                   {view === 'active' ? 'active users' : 'banned users'}
                 </div>
                 <button
+                  ref={closeButtonRef}
                   type="button"
                   className="ml-auto inline-flex h-6 w-6 items-center justify-center text-zinc-500 transition hover:text-zinc-200 cursor-pointer"
                   onClick={onClose}
@@ -136,13 +158,20 @@ export function AdminMenuModal({
                   </svg>
                 </button>
               </div>
+              <p id={descriptionId} className="px-6 pt-3 text-sm text-zinc-500">
+                review users and choose moderation actions.
+              </p>
               <div className="px-6 pt-4">
+                <label htmlFor="admin-user-search" className="sr-only">
+                  Search users
+                </label>
                 <input
+                  id="admin-user-search"
+                  ref={searchInputRef}
                   value={search}
                   onChange={(event) => onSearchChange(event.target.value)}
                   placeholder="search users"
                   className="h-9 w-full border border-zinc-700 bg-black/40 px-3 text-zinc-100 placeholder:text-zinc-600 focus:border-zinc-500 focus:outline-none"
-                  autoFocus
                 />
               </div>
               <div className="scrollbar-minimal max-h-64 min-h-[120px] overflow-y-auto px-6 py-3">

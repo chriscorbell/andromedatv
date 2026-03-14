@@ -1,3 +1,5 @@
+import { useId, useRef } from 'react'
+import { useDialogFocus } from '../hooks/use-dialog-focus'
 import type { AdminAction, AdminMessageActionTarget } from '../types/admin'
 
 type AdminMessageActionsModalProps = {
@@ -17,6 +19,11 @@ export function AdminMessageActionsModal({
   target,
   visible,
 }: AdminMessageActionsModalProps) {
+  const titleId = useId()
+  const bodyId = useId()
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null)
+  const dialogRef = useDialogFocus<HTMLDivElement>(active, closeButtonRef)
+
   if (!visible || !target) {
     return null
   }
@@ -27,12 +34,19 @@ export function AdminMessageActionsModal({
       onClick={onClose}
     >
       <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={bodyId}
+        tabIndex={-1}
         className={`w-full max-w-sm border border-zinc-800 bg-[#050505] p-6 text-zinc-200 shadow-xl transition duration-200 ${active ? 'translate-y-0 scale-100 opacity-100' : 'translate-y-2 scale-95 opacity-0'}`}
         onClick={(event) => event.stopPropagation()}
       >
         <div className="flex items-start justify-between gap-4">
-          <div className="ui-header font-extrabold">message actions</div>
+          <div id={titleId} className="ui-header font-extrabold">message actions</div>
           <button
+            ref={closeButtonRef}
             type="button"
             className="inline-flex h-6 w-6 items-center justify-center text-zinc-500 transition hover:text-zinc-200 cursor-pointer"
             onClick={onClose}
@@ -53,7 +67,7 @@ export function AdminMessageActionsModal({
             </svg>
           </button>
         </div>
-        <p className="mt-3 text-zinc-500">
+        <p id={bodyId} className="mt-3 text-zinc-500">
           choose an action for{' '}
           <span className="text-zinc-300">{target.nickname}</span>
         </p>
