@@ -7,7 +7,7 @@ import type {
   AdminUser,
 } from '../types/admin'
 
-const CHAT_API_URL = '/chat'
+const CHAT_API_URL = '/api/chat'
 
 type UseAdminControlsOptions = {
   authIsAdmin: boolean

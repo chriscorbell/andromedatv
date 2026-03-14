@@ -1,18 +1,17 @@
-import { useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import andromedaIcon from './assets/andromeda.png'
-import { AdminConfirmModal } from './components/admin-confirm-modal'
 import { AboutModal } from './components/about-modal'
 import { ChatAuthForm } from './components/chat-auth-form'
 import { ChatComposer } from './components/chat-composer'
 import { ChatMessageList } from './components/chat-message-list'
-import { AdminMenuModal } from './components/admin-menu-modal'
-import { AdminMessageActionsModal } from './components/admin-message-actions-modal'
 import { SchedulePanel } from './components/schedule-panel'
 import { VideoPlayer } from './components/video-player'
 import { useAdminControls } from './hooks/use-admin-controls'
 import { useChat } from './hooks/use-chat'
 import { useSchedule } from './hooks/use-schedule'
 import { useVideoPlayer } from './hooks/use-video-player'
+
+const AdminOverlays = lazy(() => import('./components/admin-overlays'))
 
 function App() {
   const [infoVisible, setInfoVisible] = useState(false)
@@ -90,6 +89,11 @@ function App() {
     syncScheduleTitleTooltip,
     toggleScheduleItem,
   } = useSchedule()
+  const shouldRenderAdminOverlays =
+    authIsAdmin ||
+    adminMenu.visible ||
+    adminMessageActions.visible ||
+    adminConfirm.visible
 
   const openInfo = () => {
     if (infoCloseTimeoutRef.current) {
@@ -267,36 +271,25 @@ function App() {
           </aside>
         </div>
       </div>
-      <AdminMenuModal
-        active={adminMenu.active}
-        onBack={() => void backToAdminMain()}
-        onClose={closeAdminMenu}
-        onOpenClearChatConfirm={openClearChatConfirm}
-        onOpenUserView={(view) => void openAdminMenuView(view)}
-        onSearchChange={setAdminUserSearch}
-        onUserAction={handleAdminUserAction}
-        search={adminMenu.userSearch}
-        userList={adminMenu.userList}
-        userLoading={adminMenu.userLoading}
-        view={adminMenu.view}
-        viewAnimating={adminMenu.viewAnimating}
-        visible={adminMenu.visible}
-      />
-      <AdminMessageActionsModal
-        active={adminMessageActions.active}
-        onClose={closeAdminMessageActions}
-        onSelectAction={selectAdminMessageAction}
-        target={adminMessageActions.target}
-        visible={adminMessageActions.visible}
-      />
-      <AdminConfirmModal
-        active={adminConfirm.active}
-        body={adminConfirm.body}
-        onCancel={cancelAdminConfirm}
-        onConfirm={() => void confirmAdminAction()}
-        title={adminConfirm.title}
-        visible={adminConfirm.visible}
-      />
+      {shouldRenderAdminOverlays && (
+        <Suspense fallback={null}>
+          <AdminOverlays
+            adminConfirm={adminConfirm}
+            adminMenu={adminMenu}
+            adminMessageActions={adminMessageActions}
+            onBack={() => void backToAdminMain()}
+            onCancelConfirm={cancelAdminConfirm}
+            onCloseMenu={closeAdminMenu}
+            onCloseMessageActions={closeAdminMessageActions}
+            onConfirm={() => void confirmAdminAction()}
+            onOpenClearChatConfirm={openClearChatConfirm}
+            onOpenUserView={(view) => void openAdminMenuView(view)}
+            onSearchChange={setAdminUserSearch}
+            onSelectAction={selectAdminMessageAction}
+            onUserAction={handleAdminUserAction}
+          />
+        </Suspense>
+      )}
       <AboutModal
         active={infoActive}
         onClose={closeInfo}

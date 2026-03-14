@@ -1,7 +1,43 @@
 import { useEffect, useRef, useState } from 'react'
-import Hls from 'hls.js'
+import type Hls from 'hls.js'
 
 const HLS_URL = '/iptv/session/1/hls.m3u8'
+const HLS_WARMUP_DELAY_MS = 150
+
+type HlsCtor = typeof import('hls.js').default
+type IdleCallbackHandle = number
+
+let cachedHlsCtor: HlsCtor | null = null
+let cachedHlsCtorPromise: Promise<HlsCtor | null> | null = null
+
+async function loadSharedHlsCtor() {
+  if (cachedHlsCtor) {
+    return cachedHlsCtor
+  }
+
+  if (cachedHlsCtorPromise) {
+    return cachedHlsCtorPromise
+  }
+
+  cachedHlsCtorPromise = import('hls.js')
+    .then((module) => {
+      if (!module.default.isSupported()) {
+        return null
+      }
+
+      cachedHlsCtor = module.default
+      return cachedHlsCtor
+    })
+    .catch((error) => {
+      console.warn('Failed to load hls.js', error)
+      return null
+    })
+    .finally(() => {
+      cachedHlsCtorPromise = null
+    })
+
+  return cachedHlsCtorPromise
+}
 
 export function useVideoPlayer() {
   const videoRef = useRef<HTMLVideoElement | null>(null)
@@ -24,7 +60,6 @@ export function useVideoPlayer() {
     const supportsNativeHls = Boolean(
       video.canPlayType('application/vnd.apple.mpegurl'),
     )
-    const canUseHlsJs = Hls.isSupported()
 
     const clearRestartTimer = () => {
       if (hlsRestartTimeoutRef.current) {
@@ -55,6 +90,10 @@ export function useVideoPlayer() {
     let stalledChecks = 0
     let manifestLoaded = false
     let playbackStarted = false
+    let disposed = false
+    let hlsSupportKnown = supportsNativeHls
+    let warmupTimeoutId: number | null = null
+    let warmupIdleHandle: IdleCallbackHandle | null = null
 
     const clearStartupRestartTimer = () => {
       if (startupRestartTimeout) {
@@ -63,18 +102,28 @@ export function useVideoPlayer() {
       }
     }
 
+    const loadHlsCtor = async () => {
+      const ctor = await loadSharedHlsCtor()
+      if (disposed) {
+        return null
+      }
+
+      hlsSupportKnown = Boolean(ctor)
+      return ctor
+    }
+
     const getStreamUrl = () =>
       `${HLS_URL}${HLS_URL.includes('?') ? '&' : '?'}ts=${Date.now()}`
 
     const scheduleStartupRestart = (delay = 12_000) => {
-      if (!supportsNativeHls && !canUseHlsJs) {
+      if (!supportsNativeHls && !hlsSupportKnown) {
         return
       }
 
       clearStartupRestartTimer()
       startupRestartTimeout = window.setTimeout(() => {
         if (!playbackStarted) {
-          restartStream(0)
+          void restartStream(0)
         }
       }, delay)
     }
@@ -117,7 +166,7 @@ export function useVideoPlayer() {
       clearStartupRestartTimer()
     }
 
-    const restartStream = (delay = 1500) => {
+    const restartStream = async (delay = 1500) => {
       clearRestartTimer()
       clearStartupRestartTimer()
       hlsRestartTimeoutRef.current = window.setTimeout(() => {
@@ -126,9 +175,7 @@ export function useVideoPlayer() {
           return
         }
 
-        if (canUseHlsJs) {
-          startHls()
-        }
+        void startHls()
       }, delay)
     }
 
@@ -145,13 +192,18 @@ export function useVideoPlayer() {
       scheduleStartupRestart()
     }
 
-    const startHls = () => {
+    const startHls = async () => {
       playbackStarted = false
       manifestLoaded = false
       clearStartupRestartTimer()
       destroyHls()
 
-      const hls = new Hls({
+      const HlsImpl = await loadHlsCtor()
+      if (!HlsImpl || disposed) {
+        return
+      }
+
+      const hls = new HlsImpl({
         enableWorker: true,
         lowLatencyMode: false,
         manifestLoadingTimeOut: 20_000,
@@ -165,38 +217,38 @@ export function useVideoPlayer() {
 
       hlsRef.current = hls
 
-      hls.on(Hls.Events.MEDIA_ATTACHED, () => {
+      hls.on(HlsImpl.Events.MEDIA_ATTACHED, () => {
         hls.loadSource(getStreamUrl())
         scheduleStartupRestart()
       })
 
-      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+      hls.on(HlsImpl.Events.MANIFEST_PARSED, () => {
         manifestLoaded = true
         schedulePlaybackRetry(0)
       })
 
-      hls.on(Hls.Events.LEVEL_LOADED, () => {
+      hls.on(HlsImpl.Events.LEVEL_LOADED, () => {
         manifestLoaded = true
         if (video.paused) {
           schedulePlaybackRetry(0)
         }
       })
 
-      hls.on(Hls.Events.ERROR, (_event, data) => {
+      hls.on(HlsImpl.Events.ERROR, (_event, data) => {
         if (!data.fatal) {
           return
         }
 
-        if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+        if (data.type === HlsImpl.ErrorTypes.NETWORK_ERROR) {
           if (
             !playbackStarted ||
-            data.details === Hls.ErrorDetails.MANIFEST_LOAD_ERROR ||
-            data.details === Hls.ErrorDetails.MANIFEST_LOAD_TIMEOUT ||
-            data.details === Hls.ErrorDetails.LEVEL_EMPTY_ERROR ||
-            data.details === Hls.ErrorDetails.LEVEL_LOAD_ERROR ||
-            data.details === Hls.ErrorDetails.LEVEL_LOAD_TIMEOUT
+            data.details === HlsImpl.ErrorDetails.MANIFEST_LOAD_ERROR ||
+            data.details === HlsImpl.ErrorDetails.MANIFEST_LOAD_TIMEOUT ||
+            data.details === HlsImpl.ErrorDetails.LEVEL_EMPTY_ERROR ||
+            data.details === HlsImpl.ErrorDetails.LEVEL_LOAD_ERROR ||
+            data.details === HlsImpl.ErrorDetails.LEVEL_LOAD_TIMEOUT
           ) {
-            restartStream(1500)
+            void restartStream(1500)
             return
           }
 
@@ -206,9 +258,9 @@ export function useVideoPlayer() {
           return
         }
 
-        if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+        if (data.type === HlsImpl.ErrorTypes.MEDIA_ERROR) {
           if (recoveryInProgress || !manifestLoaded) {
-            restartStream(1500)
+            void restartStream(1500)
             return
           }
 
@@ -221,10 +273,18 @@ export function useVideoPlayer() {
           return
         }
 
-        restartStream(1500)
+        void restartStream(1500)
       })
 
       hls.attachMedia(video)
+    }
+
+    const warmHlsChunk = () => {
+      if (supportsNativeHls) {
+        return
+      }
+
+      void loadHlsCtor()
     }
 
     const nudgePlayback = () => {
@@ -240,7 +300,7 @@ export function useVideoPlayer() {
 
     const handleVideoError = () => {
       if (!playbackStarted) {
-        restartStream(1500)
+        void restartStream(1500)
         return
       }
 
@@ -263,22 +323,24 @@ export function useVideoPlayer() {
 
     if (supportsNativeHls) {
       startNativeStream()
-    } else if (canUseHlsJs) {
-      startHls()
     } else {
-      return () => {
-        video.removeEventListener('loadedmetadata', handleReady)
-        video.removeEventListener('canplay', handleReady)
-        video.removeEventListener('playing', handlePlaying)
-        video.removeEventListener('error', handleVideoError)
-        video.removeEventListener('waiting', handleWaiting)
-        video.removeEventListener('stalled', handleWaiting)
-        document.removeEventListener('visibilitychange', handleVisibilityChange)
-        clearRestartTimer()
-        clearPlaybackRetryTimer()
-        clearStartupRestartTimer()
-        destroyHls()
+      const scheduleWarmup = () => {
+        if (window.requestIdleCallback) {
+          warmupIdleHandle = window.requestIdleCallback(() => {
+            warmupIdleHandle = null
+            warmHlsChunk()
+          })
+          return
+        }
+
+        warmupTimeoutId = window.setTimeout(() => {
+          warmupTimeoutId = null
+          warmHlsChunk()
+        }, HLS_WARMUP_DELAY_MS)
       }
+
+      scheduleWarmup()
+      void startHls()
     }
 
     playbackWatchdog = window.setInterval(() => {
@@ -313,6 +375,7 @@ export function useVideoPlayer() {
     }, 10_000)
 
     return () => {
+      disposed = true
       video.removeEventListener('loadedmetadata', handleReady)
       video.removeEventListener('canplay', handleReady)
       video.removeEventListener('playing', handlePlaying)
@@ -326,6 +389,12 @@ export function useVideoPlayer() {
       clearRestartTimer()
       clearPlaybackRetryTimer()
       clearStartupRestartTimer()
+      if (warmupTimeoutId) {
+        window.clearTimeout(warmupTimeoutId)
+      }
+      if (warmupIdleHandle !== null && window.cancelIdleCallback) {
+        window.cancelIdleCallback(warmupIdleHandle)
+      }
       destroyHls()
       video.removeAttribute('src')
       video.load()

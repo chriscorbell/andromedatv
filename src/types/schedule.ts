@@ -4,6 +4,4 @@ export type ScheduleItem = {
   time?: string
   description?: string
   live?: boolean
-  start?: Date
-  stop?: Date
 }

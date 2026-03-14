@@ -7,10 +7,10 @@ COPY src ./src
 RUN bun install --frozen-lockfile
 RUN bun run build
 
-FROM node:20-slim AS chat-build
-WORKDIR /app/chat
+FROM node:20-slim AS server-build
+WORKDIR /app/server
 
-COPY chat/package.json ./
+COPY server/package.json ./
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends python3 make g++ \
@@ -18,7 +18,7 @@ RUN apt-get update \
   && apt-get purge -y --auto-remove python3 make g++ \
   && rm -rf /var/lib/apt/lists/*
 
-COPY chat/ ./
+COPY server/ ./
 RUN npm run build
 RUN npm prune --omit=dev
 
@@ -27,10 +27,10 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 ENV PORT=3001
-ENV DB_PATH=/data/chat.db
+ENV DB_PATH=/data/andromeda.db
 
 COPY --from=frontend-build /app/dist /app/dist
-COPY --from=chat-build /app/chat /app/chat
+COPY --from=server-build /app/server /app/server
 
 EXPOSE 3001
-CMD ["node", "/app/chat/dist/index.js"]
+CMD ["node", "/app/server/dist/index.js"]

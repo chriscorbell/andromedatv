@@ -13,7 +13,8 @@ Typescript + React + Vite + TailwindCSS + Bun
 The app is served from one origin and one process:
 
 - `/` -> SPA frontend
-- `/chat/*` -> chat API + SSE
+- `/api/chat/*` -> chat API + SSE
+- `/api/schedule` -> normalized schedule API
 - `/iptv/*` -> reverse proxy to external ErsatzTV
 
 ### Local frontend scripts
@@ -55,6 +56,8 @@ CORS_ORIGIN=https://yourdomain.com # Optional - default is "*"
 
 JWT_SECRET=replace_me # Optional - if omitted, the app will generate and persist one under /data
 
+DB_PATH=/data/andromeda.db # Optional - default database path
+
 ```
 
 The admin bootstrap only runs when there are no admin users in the database. After the first admin exists, those variables are ignored unless you reset the chat DB.
@@ -87,13 +90,14 @@ docker compose up -d
 
 ### 3) Data Persistence
 
-Chat DB is persisted via host bind mount:
+App data is persisted via host bind mount:
 
-- `./chat-data:/data`
+- `./data:/data`
 
 ## Health and checks
 
 - App health: `/health`
-- Chat health: `/chat/health`
+- Chat health: `/api/chat/health`
+- Schedule API: `/api/schedule`
 - XMLTV via proxy: `/iptv/xmltv.xml`
 - HLS via proxy: `/iptv/session/1/hls.m3u8`

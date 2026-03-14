@@ -15,7 +15,7 @@ const CORS_ORIGIN = process.env.CORS_ORIGIN || "*";
 const ERSATZTV_BASE_URL = process.env.ERSATZTV_BASE_URL || "";
 const DB_PATH =
     process.env.DB_PATH ||
-    path.resolve(__dirname, "..", "data", "chat.db");
+    path.resolve(__dirname, "..", "data", "andromeda.db");
 const JWT_SECRET_PATH =
     process.env.JWT_SECRET_PATH ||
     path.resolve(path.dirname(DB_PATH), "jwt-secret");
@@ -55,6 +55,25 @@ type MessageRow = {
 };
 type MessageDbRow = Omit<MessageRow, "is_admin"> & {
     is_admin: number;
+};
+type ScheduleItem = {
+    title: string;
+    episode?: string;
+    time?: string;
+    description?: string;
+    live?: boolean;
+};
+type SchedulePayload = {
+    fetchedAt: string;
+    refreshAfterMs: number;
+    schedule: ScheduleItem[];
+};
+type NormalizedProgram = {
+    description?: string;
+    episode?: string;
+    start?: Date;
+    stop?: Date;
+    title: string;
 };
 
 const publicStreamClients = new Set<PublicStreamClient>();
@@ -203,7 +222,7 @@ function setStreamAuthCookie(req: Request, res: Response, token: string) {
         httpOnly: true,
         sameSite: "lax",
         secure: isSecureRequest(req),
-        path: "/chat",
+        path: "/api/chat",
         maxAge: AUTH_TOKEN_TTL_MS,
     });
 }
@@ -213,7 +232,7 @@ function clearStreamAuthCookie(req: Request, res: Response) {
         httpOnly: true,
         sameSite: "lax",
         secure: isSecureRequest(req),
-        path: "/chat",
+        path: "/api/chat",
     });
 }
 
@@ -313,6 +332,180 @@ async function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
     return Buffer.concat(chunks);
 }
 
+function decodeXmlEntities(value: string): string {
+    return value.replace(/&(#x?[0-9a-f]+|amp|lt|gt|quot|apos);/gi, (match, entity) => {
+        const normalized = String(entity).toLowerCase();
+        if (normalized === "amp") {
+            return "&";
+        }
+        if (normalized === "lt") {
+            return "<";
+        }
+        if (normalized === "gt") {
+            return ">";
+        }
+        if (normalized === "quot") {
+            return "\"";
+        }
+        if (normalized === "apos") {
+            return "'";
+        }
+        if (normalized.startsWith("#x")) {
+            const codePoint = Number.parseInt(normalized.slice(2), 16);
+            return Number.isFinite(codePoint) ? String.fromCodePoint(codePoint) : match;
+        }
+        if (normalized.startsWith("#")) {
+            const codePoint = Number.parseInt(normalized.slice(1), 10);
+            return Number.isFinite(codePoint) ? String.fromCodePoint(codePoint) : match;
+        }
+        return match;
+    });
+}
+
+function parseXmlAttributes(rawAttributes: string): Record<string, string> {
+    const attributes: Record<string, string> = {};
+    const attributePattern = /([a-zA-Z0-9:_-]+)\s*=\s*"([^"]*)"/g;
+
+    let match: RegExpExecArray | null = null;
+    while ((match = attributePattern.exec(rawAttributes))) {
+        attributes[match[1]] = decodeXmlEntities(match[2]);
+    }
+
+    return attributes;
+}
+
+function stripXmlMarkup(value: string): string {
+    let normalized = value.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1");
+
+    for (let index = 0; index < 3; index += 1) {
+        const decoded = decodeXmlEntities(normalized);
+        normalized = decoded
+            .replace(/<br\s*\/?\s*>/gi, "\n")
+            .replace(/<[^>]+>/g, "");
+    }
+
+    return normalized
+        .replace(/\s+\n/g, "\n")
+        .replace(/\n?\s*Source:\s*[^\n]+\s*$/i, "")
+        .trim();
+}
+
+function getTagText(block: string, tagName: string): string | undefined {
+    const pattern = new RegExp(`<${tagName}\\b[^>]*>([\\s\\S]*?)<\\/${tagName}>`, "i");
+    const match = block.match(pattern);
+    if (!match) {
+        return undefined;
+    }
+
+    const text = stripXmlMarkup(match[1]);
+    return text || undefined;
+}
+
+function getTagTexts(block: string, tagName: string): string[] {
+    const pattern = new RegExp(`<${tagName}\\b[^>]*>([\\s\\S]*?)<\\/${tagName}>`, "gi");
+    const values: string[] = [];
+
+    let match: RegExpExecArray | null = null;
+    while ((match = pattern.exec(block))) {
+        const text = stripXmlMarkup(match[1]);
+        if (text) {
+            values.push(text);
+        }
+    }
+
+    return values;
+}
+
+function getEpisodePrefix(block: string): string | undefined {
+    const match = block.match(/<episode-num\b([^>]*)>([\s\S]*?)<\/episode-num>/i);
+    if (!match) {
+        return undefined;
+    }
+
+    const system = parseXmlAttributes(match[1]).system || "xmltv_ns";
+    const raw = stripXmlMarkup(match[2]);
+    if (!raw) {
+        return undefined;
+    }
+
+    if (system === "xmltv_ns") {
+        const [seasonRaw, episodeRaw] = raw.split(".");
+        const seasonIndex = Number(seasonRaw);
+        const episodeIndex = Number(episodeRaw);
+        if (Number.isFinite(seasonIndex) && Number.isFinite(episodeIndex)) {
+            const season = String(seasonIndex + 1).padStart(2, "0");
+            const episode = String(episodeIndex + 1).padStart(2, "0");
+            return `S${season}E${episode}`;
+        }
+    }
+
+    const seasonEpisodeMatch = raw.match(/S(\d+)E(\d+)/i);
+    if (seasonEpisodeMatch) {
+        const season = String(Number(seasonEpisodeMatch[1])).padStart(2, "0");
+        const episode = String(Number(seasonEpisodeMatch[2])).padStart(2, "0");
+        return `S${season}E${episode}`;
+    }
+
+    return undefined;
+}
+
+function parseXmltvDate(value?: string): Date | null {
+    if (!value) {
+        return null;
+    }
+
+    const [stamp, offset = ""] = value.trim().split(" ");
+    if (!stamp || stamp.length < 14) {
+        return null;
+    }
+
+    const year = Number(stamp.slice(0, 4));
+    const month = Number(stamp.slice(4, 6)) - 1;
+    const day = Number(stamp.slice(6, 8));
+    const hour = Number(stamp.slice(8, 10));
+    const minute = Number(stamp.slice(10, 12));
+    const second = Number(stamp.slice(12, 14));
+
+    let dateUtc = Date.UTC(year, month, day, hour, minute, second);
+
+    if (offset && /^[+-]\d{4}$/.test(offset)) {
+        const sign = offset.startsWith("-") ? -1 : 1;
+        const offsetHours = Number(offset.slice(1, 3));
+        const offsetMinutes = Number(offset.slice(3, 5));
+        const totalMinutes = sign * (offsetHours * 60 + offsetMinutes);
+        dateUtc -= totalMinutes * 60_000;
+    }
+
+    return new Date(dateUtc);
+}
+
+function formatTimeRange(start?: Date, stop?: Date): string | undefined {
+    if (!start || !stop) {
+        return undefined;
+    }
+
+    const options: Intl.DateTimeFormatOptions = {
+        hour: "numeric",
+        minute: "2-digit",
+    };
+    const startLabel = start.toLocaleTimeString([], options);
+    const stopLabel = stop.toLocaleTimeString([], options);
+    return `${startLabel} - ${stopLabel}`;
+}
+
+function computeScheduleRefreshDelay(now: Date, currentItem?: { stop?: Date }) {
+    if (!currentItem?.stop) {
+        return 60_000;
+    }
+
+    const millisecondsUntilBoundary = currentItem.stop.getTime() - now.getTime() + 1_000;
+    if (!Number.isFinite(millisecondsUntilBoundary) || millisecondsUntilBoundary <= 0) {
+        return 15_000;
+    }
+
+    return Math.min(Math.max(millisecondsUntilBoundary, 15_000), 5 * 60_000);
+}
+
 function broadcastChatEvent(event: string, data: unknown) {
     for (const client of publicStreamClients) {
         writeSseEvent(client.res, event, data);
@@ -383,6 +576,10 @@ async function main() {
     const db = await initDb(DB_PATH);
     const ersatzBaseUrl = new URL(ERSATZTV_BASE_URL);
     const ersatzIptvBasePath = normalizeIptvBasePath(ersatzBaseUrl.pathname);
+    const scheduleXmlUrl = new URL(ersatzBaseUrl.toString());
+    scheduleXmlUrl.pathname = joinUrlPaths(ersatzIptvBasePath, "/xmltv.xml");
+    let scheduleCache: { expiresAt: number; payload: SchedulePayload } | null = null;
+    let scheduleCachePromise: Promise<SchedulePayload> | null = null;
 
     if (Boolean(INITIAL_ADMIN_NICKNAME) !== Boolean(INITIAL_ADMIN_PASSWORD)) {
         throw new Error(
@@ -514,7 +711,124 @@ async function main() {
     };
 
     const app = express();
-    const chatRouter = express.Router();
+    const apiChatRouter = express.Router();
+
+    const loadSchedulePayload = async (): Promise<SchedulePayload> => {
+        const now = Date.now();
+        if (scheduleCache && scheduleCache.expiresAt > now) {
+            return scheduleCache.payload;
+        }
+
+        if (scheduleCachePromise) {
+            return scheduleCachePromise;
+        }
+
+        scheduleCachePromise = (async () => {
+            const response = await fetch(scheduleXmlUrl.toString(), {
+                headers: {
+                    "accept-encoding": "identity",
+                },
+            });
+
+            if (!response.ok) {
+                throw new Error(`Failed to fetch XMLTV: ${response.status}`);
+            }
+
+            const xmlText = await response.text();
+            const channelMatches = Array.from(
+                xmlText.matchAll(/<channel\b([^>]*)>([\s\S]*?)<\/channel>/gi)
+            );
+            const matchedChannel = channelMatches.find((match) => {
+                const names = getTagTexts(match[2], "display-name").map((name) =>
+                    name.trim().toLowerCase()
+                );
+                return (
+                    names.includes("1") ||
+                    names.includes("1 andromeda") ||
+                    names.includes("andromeda")
+                );
+            });
+            const channelId =
+                (matchedChannel && parseXmlAttributes(matchedChannel[1]).id) || "1";
+
+            const allPrograms = Array.from(
+                xmlText.matchAll(/<programme\b([^>]*)>([\s\S]*?)<\/programme>/gi)
+            );
+            const channelPrograms = allPrograms.filter((match) => {
+                const attributes = parseXmlAttributes(match[1]);
+                return attributes.channel === channelId;
+            });
+            const programs = channelPrograms.length ? channelPrograms : allPrograms;
+
+            const normalizedPrograms = programs
+                .map((match): NormalizedProgram | null => {
+                    const attributes = parseXmlAttributes(match[1]);
+                    const block = match[2];
+                    const title = getTagText(block, "title");
+                    if (!title) {
+                        return null;
+                    }
+
+                    const episodeTitle = getTagText(block, "sub-title");
+                    const episodePrefix = getEpisodePrefix(block);
+                    const episode = episodeTitle
+                        ? `${episodePrefix ? `${episodePrefix} ` : ""}${episodeTitle}`
+                        : episodePrefix;
+                    const description = getTagText(block, "desc");
+                    const start = parseXmltvDate(attributes.start || "");
+                    const stop = parseXmltvDate(attributes.stop || "");
+
+                    return {
+                        description,
+                        episode,
+                        start: start || undefined,
+                        stop: stop || undefined,
+                        title,
+                    };
+                })
+                .filter((item): item is NormalizedProgram => item !== null)
+                .sort((a, b) => (a.start?.getTime() || 0) - (b.start?.getTime() || 0));
+
+            const currentTime = new Date();
+            const currentIndex = normalizedPrograms.findIndex(
+                (item) =>
+                    item.start && item.stop && item.start <= currentTime && currentTime < item.stop
+            );
+            const startIndex = currentIndex >= 0 ? currentIndex : 0;
+            const slicedPrograms = normalizedPrograms.slice(startIndex, startIndex + 25);
+
+            const schedule = slicedPrograms.map((item, index): ScheduleItem => {
+                const live = index === 0 && currentIndex >= 0;
+                return {
+                    ...(item.description ? { description: item.description } : {}),
+                    ...(item.episode ? { episode: item.episode } : {}),
+                    live,
+                    time: live ? "live" : formatTimeRange(item.start, item.stop),
+                    title: item.title,
+                };
+            });
+
+            const refreshAfterMs = computeScheduleRefreshDelay(currentTime, slicedPrograms[0]);
+            const payload = {
+                fetchedAt: new Date().toISOString(),
+                refreshAfterMs,
+                schedule,
+            };
+
+            scheduleCache = {
+                expiresAt: Date.now() + Math.min(refreshAfterMs, 30_000),
+                payload,
+            };
+
+            return payload;
+        })();
+
+        try {
+            return await scheduleCachePromise;
+        } finally {
+            scheduleCachePromise = null;
+        }
+    };
 
     app.set("trust proxy", true);
 
@@ -615,19 +929,30 @@ async function main() {
         }
     );
 
-    chatRouter.use(
+    apiChatRouter.use(
         cors({
             origin: CORS_ORIGIN === "*" ? true : CORS_ORIGIN,
             credentials: true,
         })
     );
-    chatRouter.use(express.json({ limit: "8kb" }));
+    apiChatRouter.use(express.json({ limit: "8kb" }));
 
-    chatRouter.get("/health", (_req: Request, res: Response) => {
+    apiChatRouter.get("/health", (_req: Request, res: Response) => {
         res.json({ ok: true });
     });
 
-    chatRouter.post("/auth/register", async (req: Request, res: Response) => {
+    app.get("/api/schedule", async (_req: Request, res: Response) => {
+        try {
+            const payload = await loadSchedulePayload();
+            setNoCacheHeaders(res);
+            return res.json(payload);
+        } catch (error) {
+            console.warn("Failed to load normalized schedule", error);
+            return res.status(502).json({ error: "Failed to load schedule" });
+        }
+    });
+
+    apiChatRouter.post("/auth/register", async (req: Request, res: Response) => {
         const rawNickname = String(req.body?.nickname || "").trim();
         const nickname = normalizeNickname(rawNickname);
         const password = String(req.body?.password || "");
@@ -679,7 +1004,7 @@ async function main() {
         return res.status(201).json({ nickname, token, isAdmin: false });
     });
 
-    chatRouter.post("/auth/login", async (req: Request, res: Response) => {
+    apiChatRouter.post("/auth/login", async (req: Request, res: Response) => {
         const rawNickname = String(req.body?.nickname || "").trim();
         const nickname = normalizeNickname(rawNickname);
         const password = String(req.body?.password || "");
@@ -726,12 +1051,12 @@ async function main() {
         return res.json({ nickname: canonicalNickname, token, isAdmin });
     });
 
-    chatRouter.post("/auth/logout", (req: Request, res: Response) => {
+    apiChatRouter.post("/auth/logout", (req: Request, res: Response) => {
         clearStreamAuthCookie(req, res);
         return res.json({ ok: true });
     });
 
-    chatRouter.get("/messages", requireAuth, async (req: AuthedRequest, res: Response) => {
+    apiChatRouter.get("/messages", requireAuth, async (req: AuthedRequest, res: Response) => {
         const rows = await listMessages();
         const messages = rows.slice().reverse();
 
@@ -744,14 +1069,14 @@ async function main() {
         });
     });
 
-    chatRouter.get("/messages/public", async (_req: Request, res: Response) => {
+    apiChatRouter.get("/messages/public", async (_req: Request, res: Response) => {
         const rows = await listMessages();
         const messages = rows.slice().reverse();
 
         return res.json({ messages });
     });
 
-    chatRouter.get("/messages/stream", requireAuth, async (req: AuthedRequest, res: Response) => {
+    apiChatRouter.get("/messages/stream", requireAuth, async (req: AuthedRequest, res: Response) => {
         res.setHeader("Content-Type", "text/event-stream");
         res.setHeader("Cache-Control", "no-cache");
         res.setHeader("Connection", "keep-alive");
@@ -780,7 +1105,7 @@ async function main() {
         return undefined;
     });
 
-    chatRouter.get("/messages/public/stream", (_req: Request, res: Response) => {
+    apiChatRouter.get("/messages/public/stream", (_req: Request, res: Response) => {
         res.setHeader("Content-Type", "text/event-stream");
         res.setHeader("Cache-Control", "no-cache");
         res.setHeader("Connection", "keep-alive");
@@ -806,7 +1131,7 @@ async function main() {
         return undefined;
     });
 
-    chatRouter.post("/messages", requireAuth, async (req: AuthedRequest, res: Response) => {
+    apiChatRouter.post("/messages", requireAuth, async (req: AuthedRequest, res: Response) => {
         const nickname = req.user?.nickname || "";
         const body = String(req.body?.body || "").trim();
         if (!validateMessage(body)) {
@@ -855,7 +1180,7 @@ async function main() {
         return res.status(201).json({ message });
     });
 
-    chatRouter.post("/admin/clear", requireAuth, requireAdmin, async (_req: Request, res: Response) => {
+    apiChatRouter.post("/admin/clear", requireAuth, requireAdmin, async (_req: Request, res: Response) => {
         await db.run("DELETE FROM messages");
 
         broadcastChatEvent("clear", { ok: true });
@@ -863,7 +1188,7 @@ async function main() {
         return res.json({ ok: true });
     });
 
-    chatRouter.post(
+    apiChatRouter.post(
         "/admin/messages/:id/delete",
         requireAuth,
         requireAdmin,
@@ -890,7 +1215,7 @@ async function main() {
         }
     );
 
-    chatRouter.post(
+    apiChatRouter.post(
         "/admin/messages/:id/warn",
         requireAuth,
         requireAdmin,
@@ -928,7 +1253,7 @@ async function main() {
         }
     );
 
-    chatRouter.post(
+    apiChatRouter.post(
         "/admin/users/:nickname/ban",
         requireAuth,
         requireAdmin,
@@ -998,7 +1323,7 @@ async function main() {
         }
     );
 
-    chatRouter.get(
+    apiChatRouter.get(
         "/admin/users/active",
         requireAuth,
         requireAdmin,
@@ -1010,7 +1335,7 @@ async function main() {
         }
     );
 
-    chatRouter.get(
+    apiChatRouter.get(
         "/admin/users/banned",
         requireAuth,
         requireAdmin,
@@ -1022,7 +1347,7 @@ async function main() {
         }
     );
 
-    chatRouter.post(
+    apiChatRouter.post(
         "/admin/users/:nickname/unban",
         requireAuth,
         requireAdmin,
@@ -1081,7 +1406,7 @@ async function main() {
         }
     );
 
-    chatRouter.delete(
+    apiChatRouter.delete(
         "/admin/users/:nickname",
         requireAuth,
         requireAdmin,
@@ -1117,14 +1442,14 @@ async function main() {
         }
     );
 
-    app.use("/chat", chatRouter);
+    app.use("/api/chat", apiChatRouter);
 
     app.use(express.static(STATIC_DIR, { index: false }));
     app.get("*", (req: Request, res: Response, next: NextFunction) => {
-        if (req.path.startsWith("/chat/") || req.path.startsWith("/iptv/")) {
+        if (req.path.startsWith("/api/") || req.path.startsWith("/iptv/")) {
             return next();
         }
-        if (req.path === "/chat" || req.path === "/iptv") {
+        if (req.path === "/api" || req.path === "/iptv") {
             return next();
         }
         return res.sendFile(path.join(STATIC_DIR, "index.html"), (err: NodeJS.ErrnoException | null) => {

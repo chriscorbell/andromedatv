@@ -1,6 +1,6 @@
 import { useEffect, useEffectEvent, useRef, useState } from 'react'
 
-const CHAT_API_URL = '/chat'
+const CHAT_API_URL = '/api/chat'
 const CHAT_STORAGE_KEY = 'andromeda-chat-auth'
 
 export type ChatMessage = {
