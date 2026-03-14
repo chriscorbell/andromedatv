@@ -1,4 +1,7 @@
+import { useEffect, useState } from 'react'
 import type { ChangeEventHandler, RefObject } from 'react'
+
+const PLAYBACK_OVERLAY_DELAY_MS = 5000
 
 type VideoPlayerProps = {
   controlsVisible: boolean
@@ -33,19 +36,39 @@ export function VideoPlayer({
   videoRef,
   volume,
 }: VideoPlayerProps) {
-  const showPlaybackOverlay = playbackState !== 'live'
+  const [playbackOverlayVisible, setPlaybackOverlayVisible] = useState(false)
+  const isPlaybackDegraded = playbackState !== 'live'
+  const showPlaybackOverlay = isPlaybackDegraded && playbackOverlayVisible
   const canRetryPlayback = playbackState !== 'connecting'
-  const playbackTitle =
-    playbackState === 'offline'
-      ? 'Stream unavailable'
-      : playbackState === 'reconnecting'
-        ? 'Reconnecting stream'
-        : 'Connecting stream'
   const playbackAccentClass =
     playbackState === 'offline'
       ? 'border-rose-500/40 bg-rose-500/12 text-rose-100'
       : 'border-sky-500/40 bg-black/72 text-zinc-100'
   const playbackRole = playbackState === 'offline' ? 'alert' : 'status'
+
+  useEffect(() => {
+    if (!isPlaybackDegraded) {
+      const resetTimeoutId = window.setTimeout(() => {
+        setPlaybackOverlayVisible(false)
+      }, 0)
+
+      return () => {
+        window.clearTimeout(resetTimeoutId)
+      }
+    }
+
+    if (playbackOverlayVisible) {
+      return
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setPlaybackOverlayVisible(true)
+    }, PLAYBACK_OVERLAY_DELAY_MS)
+
+    return () => {
+      window.clearTimeout(timeoutId)
+    }
+  }, [isPlaybackDegraded, playbackOverlayVisible])
 
   return (
     <div className="flex min-h-0 items-stretch lg:h-full">
@@ -73,17 +96,9 @@ export function VideoPlayer({
               aria-live={playbackState === 'offline' ? 'assertive' : 'polite'}
               className={`pointer-events-auto flex w-full max-w-sm flex-col gap-3 border px-4 py-4 shadow-[0_0_32px_rgba(0,0,0,0.35)] backdrop-blur-sm ${playbackAccentClass}`}
             >
-              <div className="space-y-1">
-                <p className="text-[10px] uppercase tracking-[0.28em] text-zinc-400">
-                  Live playback
-                </p>
-                <h2 className="text-sm font-semibold uppercase tracking-[0.2em]">
-                  {playbackTitle}
-                </h2>
-                <p className="text-sm leading-relaxed text-zinc-200">
-                  {playbackStatusDetail}
-                </p>
-              </div>
+              <p className="text-sm leading-relaxed text-zinc-200">
+                {playbackStatusDetail}
+              </p>
               {canRetryPlayback && (
                 <div className="flex justify-end">
                   <button

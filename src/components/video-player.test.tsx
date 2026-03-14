@@ -1,6 +1,6 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import type { ComponentProps } from 'react'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { VideoPlayer } from './video-player'
 
 function renderVideoPlayer(
@@ -27,20 +27,41 @@ function renderVideoPlayer(
 }
 
 describe('VideoPlayer', () => {
-  it('shows a connecting status overlay while the stream is starting', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('waits 5 seconds before showing a connecting status overlay', () => {
+    vi.useFakeTimers()
+
     renderVideoPlayer({
       playbackState: 'connecting',
       playbackStatusDetail: 'Connecting to live stream...',
     })
 
-    expect(screen.getByRole('status')).toHaveTextContent('Connecting stream')
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+
+    act(() => {
+      vi.advanceTimersByTime(4999)
+    })
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+
+    act(() => {
+      vi.advanceTimersByTime(1)
+    })
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'Connecting to live stream...',
+    )
     expect(screen.getByText('Connecting to live stream...')).toBeInTheDocument()
+    expect(screen.queryByText('Live playback')).not.toBeInTheDocument()
+    expect(screen.queryByText('Connecting stream')).not.toBeInTheDocument()
     expect(
       screen.queryByRole('button', { name: 'Retry now' }),
     ).not.toBeInTheDocument()
   })
 
-  it('offers an immediate retry action when playback is offline', () => {
+  it('shows retry affordances after the delay when playback stays offline', () => {
+    vi.useFakeTimers()
     const handleRetryPlayback = vi.fn()
 
     renderVideoPlayer({
@@ -49,7 +70,14 @@ describe('VideoPlayer', () => {
       playbackStatusDetail: 'Stream unavailable. Retrying automatically...',
     })
 
-    expect(screen.getByRole('alert')).toHaveTextContent('Stream unavailable')
+    act(() => {
+      vi.advanceTimersByTime(5000)
+    })
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'Stream unavailable. Retrying automatically...',
+    )
+    expect(screen.queryByText('Live playback')).not.toBeInTheDocument()
+    expect(screen.queryByText('Stream unavailable')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Retry now' }))
     expect(handleRetryPlayback).toHaveBeenCalledTimes(1)
   })
