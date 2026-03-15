@@ -12,6 +12,26 @@ type SchedulePanelProps = {
   syncTitleTooltip: (target: HTMLSpanElement) => void
 }
 
+function formatScheduleTime(item: ScheduleItem) {
+  if (!item.startAt || !item.stopAt) {
+    return item.time
+  }
+
+  const start = new Date(item.startAt)
+  const stop = new Date(item.stopAt)
+  if (Number.isNaN(start.getTime()) || Number.isNaN(stop.getTime())) {
+    return item.time
+  }
+
+  const options: Intl.DateTimeFormatOptions = {
+    hour: 'numeric',
+    minute: '2-digit',
+  }
+  const startLabel = start.toLocaleTimeString([], options)
+  const stopLabel = stop.toLocaleTimeString([], options)
+  return `${startLabel} - ${stopLabel}`
+}
+
 export function SchedulePanel({
   expandedScheduleKey,
   onToggleItem,
@@ -46,7 +66,8 @@ export function SchedulePanel({
       <div className="scrollbar-minimal min-h-0 flex-1 overflow-y-auto">
         <ul className="divide-y divide-zinc-800">
           {schedule.map((item) => {
-            const itemKey = `${item.title}-${item.time}`
+            const itemTime = formatScheduleTime(item)
+            const itemKey = `${item.title}-${item.startAt ?? item.time ?? 'schedule-item'}`
             const isExpanded = expandedScheduleKey === itemKey
             const hasDetails = Boolean(item.episode || item.description)
 
@@ -81,7 +102,7 @@ export function SchedulePanel({
                       </span>
                     ) : (
                       <span className="whitespace-nowrap text-zinc-500">
-                        {item.time}
+                        {itemTime}
                       </span>
                     )}
                     {hasDetails && (

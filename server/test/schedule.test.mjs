@@ -48,9 +48,14 @@ test("normalizeScheduleXml keeps the Andromeda channel and strips episode HTML",
         episode: "S01E02 The Beginning",
         description: "Pilot & more\nLine 2",
         live: true,
+        startAt: "2026-03-14T10:00:00.000Z",
+        stopAt: "2026-03-14T10:30:00.000Z",
         time: "live",
     });
     assert.equal(payload.schedule[1]?.title, "Genocyber");
+    assert.equal(payload.schedule[1]?.startAt, "2026-03-14T10:30:00.000Z");
+    assert.equal(payload.schedule[1]?.stopAt, "2026-03-14T11:00:00.000Z");
+    assert.equal(payload.schedule[1]?.time, undefined);
 });
 
 test("normalizeScheduleXml handles single channel/programme nodes without array wrappers", () => {
@@ -71,8 +76,32 @@ test("normalizeScheduleXml handles single channel/programme nodes without array 
     assert.deepEqual(payload.schedule[0], {
         title: "Bubblegum Crisis",
         description: "Classic OVA",
+        startAt: "2026-03-14T12:00:00.000Z",
+        stopAt: "2026-03-14T12:30:00.000Z",
         live: false,
-        time: payload.schedule[0].time,
     });
-    assert.match(payload.schedule[0].time ?? "", / - /);
+});
+
+test("normalizeScheduleXml starts from the next upcoming programme when nothing is live", () => {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<tv>
+  <channel id="andromeda-main">
+    <display-name>1 Andromeda</display-name>
+  </channel>
+  <programme start="20260314100000 +0000" stop="20260314103000 +0000" channel="andromeda-main">
+    <title>Too Early</title>
+  </programme>
+  <programme start="20260314110000 +0000" stop="20260314113000 +0000" channel="andromeda-main">
+    <title>Next Up</title>
+  </programme>
+  <programme start="20260314113000 +0000" stop="20260314120000 +0000" channel="andromeda-main">
+    <title>After That</title>
+  </programme>
+</tv>`;
+
+    const payload = schedule.normalizeScheduleXml(xml, new Date("2026-03-14T10:45:00.000Z"));
+
+    assert.equal(payload.schedule[0]?.title, "Next Up");
+    assert.equal(payload.schedule[0]?.live, false);
+    assert.equal(payload.schedule[0]?.startAt, "2026-03-14T11:00:00.000Z");
 });

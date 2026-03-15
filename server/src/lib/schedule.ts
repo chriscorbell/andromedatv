@@ -4,6 +4,8 @@ export type ScheduleItem = {
     title: string;
     episode?: string;
     time?: string;
+    startAt?: string;
+    stopAt?: string;
     description?: string;
     live?: boolean;
 };
@@ -201,20 +203,6 @@ export function parseXmltvDate(value?: string): Date | null {
     return new Date(dateUtc);
 }
 
-export function formatTimeRange(start?: Date, stop?: Date): string | undefined {
-    if (!start || !stop) {
-        return undefined;
-    }
-
-    const options: Intl.DateTimeFormatOptions = {
-        hour: "numeric",
-        minute: "2-digit",
-    };
-    const startLabel = start.toLocaleTimeString([], options);
-    const stopLabel = stop.toLocaleTimeString([], options);
-    return `${startLabel} - ${stopLabel}`;
-}
-
 export function computeScheduleRefreshDelay(now: Date, currentItem?: { stop?: Date }) {
     if (!currentItem?.stop) {
         return 60_000;
@@ -283,7 +271,10 @@ export function normalizeScheduleXml(xmlText: string, now = new Date()): Schedul
         (item) =>
             item.start && item.stop && item.start <= now && now < item.stop
     );
-    const startIndex = currentIndex >= 0 ? currentIndex : 0;
+    const nextIndex = normalizedPrograms.findIndex(
+        (item) => Boolean(item.stop ? now < item.stop : item.start && now < item.start)
+    );
+    const startIndex = currentIndex >= 0 ? currentIndex : nextIndex >= 0 ? nextIndex : 0;
     const slicedPrograms = normalizedPrograms.slice(startIndex, startIndex + 25);
 
     const schedule = slicedPrograms.map((item, index): ScheduleItem => {
@@ -292,7 +283,9 @@ export function normalizeScheduleXml(xmlText: string, now = new Date()): Schedul
             ...(item.description ? { description: item.description } : {}),
             ...(item.episode ? { episode: item.episode } : {}),
             live,
-            time: live ? "live" : formatTimeRange(item.start, item.stop),
+            ...(item.start ? { startAt: item.start.toISOString() } : {}),
+            ...(item.stop ? { stopAt: item.stop.toISOString() } : {}),
+            ...(live ? { time: "live" } : {}),
             title: item.title,
         };
     });

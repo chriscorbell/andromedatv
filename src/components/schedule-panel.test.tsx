@@ -77,6 +77,36 @@ describe('SchedulePanel', () => {
     expect(handleTooltipSync.mock.calls[0]?.[0]).toBeInstanceOf(HTMLSpanElement)
   })
 
+  it('formats schedule times in the viewer timezone from start and stop timestamps', () => {
+    const startAt = '2026-03-15T15:50:00.000Z'
+    const stopAt = '2026-03-15T16:20:00.000Z'
+    const options: Intl.DateTimeFormatOptions = {
+      hour: 'numeric',
+      minute: '2-digit',
+    }
+    const expectedLabel = `${new Date(startAt).toLocaleTimeString([], options)} - ${new Date(stopAt).toLocaleTimeString([], options)}`
+
+    render(
+      <SchedulePanel
+        expandedScheduleKey={null}
+        onToggleItem={vi.fn()}
+        onRetrySchedule={vi.fn()}
+        schedule={[
+          {
+            title: 'Genocyber',
+            startAt,
+            stopAt,
+          },
+        ]}
+        scheduleState="ready"
+        scheduleStatusDetail="Schedule is up to date."
+        syncTitleTooltip={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText(expectedLabel)).toBeInTheDocument()
+  })
+
   it('shows degraded schedule status and supports manual retry', () => {
     const handleRetry = vi.fn()
 
