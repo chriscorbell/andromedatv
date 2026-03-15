@@ -48,6 +48,7 @@ export type SchedulePayload = {
 type JsonRequestOptions = {
   authToken?: string | null
   body?: unknown
+  credentials?: RequestCredentials
   headers?: HeadersInit
   method?: string
 }
@@ -69,9 +70,16 @@ function getAuthHeaders(authToken?: string | null): HeadersInit {
 
 async function requestJson<T>(
   url: string,
-  { authToken, body, headers, method }: JsonRequestOptions = {},
+  {
+    authToken,
+    body,
+    credentials = 'same-origin',
+    headers,
+    method,
+  }: JsonRequestOptions = {},
 ): Promise<JsonResult<T>> {
   const response = await fetch(url, {
+    credentials,
     method,
     headers: {
       ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
@@ -105,7 +113,7 @@ export const api = {
         method: 'POST',
       })
     },
-    async getMessages(authToken: string) {
+    async getMessages(authToken?: string | null) {
       return requestJson<ChatMessagesPayload>(`${CHAT_API_URL}/messages`, {
         authToken,
       })
@@ -129,7 +137,7 @@ export const api = {
         },
       )
     },
-    async sendMessage(authToken: string, body: string) {
+    async sendMessage(body: string, authToken?: string | null) {
       return requestJson<ChatMutationErrorPayload>(
         `${CHAT_API_URL}/messages`,
         {
@@ -147,19 +155,19 @@ export const api = {
     },
   },
   admin: {
-    async getUsers(view: 'active' | 'banned', authToken: string) {
+    async getUsers(view: 'active' | 'banned', authToken?: string | null) {
       return requestJson<AdminUsersPayload>(
         `${CHAT_API_URL}/admin/users/${view}`,
         { authToken },
       )
     },
-    async clear(authToken: string) {
+    async clear(authToken?: string | null) {
       return requestJson<{ ok: boolean }>(`${CHAT_API_URL}/admin/clear`, {
         method: 'POST',
         authToken,
       })
     },
-    async deleteMessage(messageId: number, authToken: string) {
+    async deleteMessage(messageId: number, authToken?: string | null) {
       return requestJson<{ ok: boolean }>(
         `${CHAT_API_URL}/admin/messages/${messageId}/delete`,
         {
@@ -168,7 +176,7 @@ export const api = {
         },
       )
     },
-    async warnUser(messageId: number, authToken: string) {
+    async warnUser(messageId: number, authToken?: string | null) {
       return requestJson<{ ok: boolean; nickname?: string }>(
         `${CHAT_API_URL}/admin/messages/${messageId}/warn`,
         {
@@ -177,7 +185,7 @@ export const api = {
         },
       )
     },
-    async banUser(nickname: string, authToken: string) {
+    async banUser(nickname: string, authToken?: string | null) {
       return requestJson<{ ok: boolean }>(
         `${CHAT_API_URL}/admin/users/${encodeURIComponent(nickname)}/ban`,
         {
@@ -186,7 +194,7 @@ export const api = {
         },
       )
     },
-    async unbanUser(nickname: string, authToken: string) {
+    async unbanUser(nickname: string, authToken?: string | null) {
       return requestJson<{ ok: boolean }>(
         `${CHAT_API_URL}/admin/users/${encodeURIComponent(nickname)}/unban`,
         {
@@ -195,7 +203,7 @@ export const api = {
         },
       )
     },
-    async deleteUser(nickname: string, authToken: string) {
+    async deleteUser(nickname: string, authToken?: string | null) {
       return requestJson<{ ok: boolean }>(
         `${CHAT_API_URL}/admin/users/${encodeURIComponent(nickname)}`,
         {

@@ -2,6 +2,11 @@
 
 This is a single-page livestream webapp with schedule + chat, deployable as a single container
 
+## Tooling
+
+- Bun is the package manager for both the root app and the `server/` package.
+- Node 20 remains the production runtime for the backend container.
+
 ## Frontend
 
 ### Stack
@@ -25,6 +30,12 @@ The app is served from one origin and one process:
 - `bun run lint`
 - `bun run test:client`
 - `bun run test:e2e`
+
+### Local backend scripts
+
+- `bun run --cwd server dev`
+- `bun run --cwd server build`
+- `bun run --cwd server test`
 
 For browser smoke tests, install Chromium once locally with:
 

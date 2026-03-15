@@ -22,6 +22,7 @@ const AUTH_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const RATE_LIMIT_MAX = 5;
 const RATE_WINDOW_MS = 10_000;
 const COOLDOWN_MS = 60_000;
+const RATE_LIMIT_PRUNE_INTERVAL_MS = 30_000;
 
 const HOP_BY_HOP_HEADERS = new Set([
     "connection",
@@ -64,6 +65,11 @@ type MessageRow = {
 
 type MessageDbRow = Omit<MessageRow, "is_admin"> & {
     is_admin: number;
+};
+
+type RateLimitEntry = {
+    timestamps: number[];
+    cooldownUntil?: number;
 };
 
 type ScheduleLoader = () => Promise<SchedulePayload>;
@@ -191,7 +197,7 @@ export function createApp(options: CreateAppOptions) {
     const publicStreamClients = new Set<PublicStreamClient>();
     const privateStreamClients = new Set<PrivateStreamClient>();
     let heartbeatTimer: NodeJS.Timeout | null = null;
-    const rateLimits = new Map<string, { timestamps: number[]; cooldownUntil?: number }>();
+    const rateLimits = new Map<string, RateLimitEntry>();
 
     const ersatzIptvBasePath = normalizeIptvBasePath(ersatzBaseUrl.pathname);
     const scheduleXmlUrl = new URL(ersatzBaseUrl.toString());
@@ -247,11 +253,46 @@ export function createApp(options: CreateAppOptions) {
         );
     }
 
-    function checkRateLimit(nickname: string, now: number) {
-        const entry = rateLimits.get(nickname) || { timestamps: [] };
-        const recent = entry.timestamps.filter(
+    function getPrunedRateLimitEntry(entry: RateLimitEntry, now: number): RateLimitEntry | null {
+        const timestamps = entry.timestamps.filter(
             (timestamp) => now - timestamp < RATE_WINDOW_MS
         );
+        const cooldownUntil =
+            entry.cooldownUntil && entry.cooldownUntil > now
+                ? entry.cooldownUntil
+                : undefined;
+
+        if (timestamps.length === 0 && !cooldownUntil) {
+            return null;
+        }
+
+        return { timestamps, ...(cooldownUntil ? { cooldownUntil } : {}) };
+    }
+
+    function pruneExpiredRateLimits(now: number) {
+        for (const [nickname, entry] of rateLimits.entries()) {
+            const nextEntry = getPrunedRateLimitEntry(entry, now);
+            if (!nextEntry) {
+                rateLimits.delete(nickname);
+                continue;
+            }
+            rateLimits.set(nickname, nextEntry);
+        }
+    }
+
+    const rateLimitPruneTimer = setInterval(() => {
+        pruneExpiredRateLimits(Date.now());
+    }, RATE_LIMIT_PRUNE_INTERVAL_MS);
+    rateLimitPruneTimer.unref?.();
+
+    function checkRateLimit(nickname: string, now: number) {
+        pruneExpiredRateLimits(now);
+
+        const entry = getPrunedRateLimitEntry(
+            rateLimits.get(nickname) || { timestamps: [] },
+            now
+        ) || { timestamps: [] };
+        const recent = entry.timestamps;
 
         if (entry.cooldownUntil && now < entry.cooldownUntil) {
             rateLimits.set(nickname, { ...entry, timestamps: recent });
@@ -521,6 +562,8 @@ export function createApp(options: CreateAppOptions) {
     });
 
     app.get("/api/status", (_req: Request, res: Response) => {
+        pruneExpiredRateLimits(Date.now());
+
         const scheduleState =
             diagnostics.schedule.lastSuccessAt
                 ? diagnostics.schedule.lastFailureAt &&

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState } from 'react'
+import { lazy, Suspense } from 'react'
 import andromedaIcon from './assets/andromeda.png'
 import { AboutModal } from './components/about-modal'
 import { ChatAuthForm } from './components/chat-auth-form'
@@ -8,6 +8,7 @@ import { SchedulePanel } from './components/schedule-panel'
 import { ServiceStatusBanner } from './components/service-status-banner'
 import { VideoPlayer } from './components/video-player'
 import { useAdminControls } from './hooks/use-admin-controls'
+import { useAboutModal } from './hooks/use-about-modal'
 import { useChat } from './hooks/use-chat'
 import { useSchedule } from './hooks/use-schedule'
 import { useVideoPlayer } from './hooks/use-video-player'
@@ -15,9 +16,7 @@ import { useVideoPlayer } from './hooks/use-video-player'
 const AdminOverlays = lazy(() => import('./components/admin-overlays'))
 
 function MainApp() {
-  const [infoVisible, setInfoVisible] = useState(false)
-  const [infoActive, setInfoActive] = useState(false)
-  const infoCloseTimeoutRef = useRef<number | null>(null)
+  const { closeInfo, infoActive, infoVisible, openInfo } = useAboutModal()
   const {
     authError,
     authIsAdmin,
@@ -26,7 +25,7 @@ function MainApp() {
     authNickname,
     authNicknameInput,
     authPasswordInput,
-    authToken,
+    authSessionActive,
     chatConnectionDetail,
     chatConnectionState,
     chatError,
@@ -71,7 +70,6 @@ function MainApp() {
     setAdminUserSearch,
   } = useAdminControls({
     authIsAdmin,
-    authToken,
     onRedactMessagesByNickname: redactMessagesByNickname,
     onRemoveMessagesByNickname: removeMessagesByNickname,
     onReplaceDeletedMessage: replaceDeletedMessage,
@@ -106,56 +104,6 @@ function MainApp() {
     adminMenu.visible ||
     adminMessageActions.visible ||
     adminConfirm.visible
-
-  const openInfo = () => {
-    if (infoCloseTimeoutRef.current) {
-      window.clearTimeout(infoCloseTimeoutRef.current)
-      infoCloseTimeoutRef.current = null
-    }
-
-    setInfoVisible(true)
-    setInfoActive(false)
-    window.requestAnimationFrame(() => {
-      window.requestAnimationFrame(() => {
-        setInfoActive(true)
-      })
-    })
-  }
-
-  const closeInfo = () => {
-    setInfoActive(false)
-    if (infoCloseTimeoutRef.current) {
-      window.clearTimeout(infoCloseTimeoutRef.current)
-    }
-    infoCloseTimeoutRef.current = window.setTimeout(() => {
-      setInfoVisible(false)
-    }, 220)
-  }
-
-  useEffect(() => {
-    if (!infoVisible) {
-      return
-    }
-
-    const handleKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        closeInfo()
-      }
-    }
-
-    window.addEventListener('keydown', handleKey)
-    return () => {
-      window.removeEventListener('keydown', handleKey)
-    }
-  }, [infoVisible])
-
-  useEffect(() => {
-    return () => {
-      if (infoCloseTimeoutRef.current) {
-        window.clearTimeout(infoCloseTimeoutRef.current)
-      }
-    }
-  }, [])
 
   return (
     <div className="ui-body h-dvh w-full bg-[#050505] text-zinc-100">
@@ -239,7 +187,7 @@ function MainApp() {
                   state={chatConnectionState}
                 />
               )}
-              {authToken ? (
+              {authSessionActive ? (
                 <>
                   <div
                     ref={chatScrollRef}

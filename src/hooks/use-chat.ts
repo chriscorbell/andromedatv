@@ -1,4 +1,12 @@
-import { useEffect, useEffectEvent, useRef, useState } from 'react'
+import {
+  useEffect,
+  useEffectEvent,
+  useRef,
+  useState,
+  type Dispatch,
+  type FormEvent,
+  type SetStateAction,
+} from 'react'
 import {
   api,
   type ChatAuthPayload,
@@ -8,8 +16,20 @@ import {
   type ChatPublicMessagesPayload,
 } from '../lib/api'
 
-const CHAT_STORAGE_KEY = 'andromeda-chat-auth'
 type ChatConnectionState = 'connecting' | 'live' | 'reconnecting' | 'offline'
+type SessionFetchResult = 'authenticated' | 'banned' | 'guest' | 'failed'
+
+function setConnectionStatus(
+  setChatConnectionState: Dispatch<SetStateAction<ChatConnectionState>>,
+  setChatConnectionDetail: Dispatch<SetStateAction<string>>,
+  nextState: ChatConnectionState,
+  detail: string,
+) {
+  setChatConnectionState((current) =>
+    current === nextState ? current : nextState,
+  )
+  setChatConnectionDetail((current) => (current === detail ? current : detail))
+}
 
 export function useChat() {
   const chatScrollRef = useRef<HTMLDivElement | null>(null)
@@ -18,9 +38,11 @@ export function useChat() {
   const messageStatusTimeoutRef = useRef<number | null>(null)
   const chatConnectionFailuresRef = useRef(0)
   const chatConnectedOnceRef = useRef(false)
+  const viewerNicknameRef = useRef<string | null>(null)
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login')
-  const [authToken, setAuthToken] = useState<string | null>(null)
+  const [authSessionActive, setAuthSessionActive] = useState(false)
+  const [hasHydratedSession, setHasHydratedSession] = useState(false)
   const [authNickname, setAuthNickname] = useState<string | null>(null)
   const [authIsAdmin, setAuthIsAdmin] = useState(false)
   const [authNicknameInput, setAuthNicknameInput] = useState('')
@@ -42,18 +64,20 @@ export function useChat() {
   )
   const [connectionRetryKey, setConnectionRetryKey] = useState(0)
 
-  const setChatConnectionStatus = (
+  const applyChatConnectionStatus = (
     nextState: ChatConnectionState,
     detail: string,
   ) => {
-    setChatConnectionState((current) =>
-      current === nextState ? current : nextState,
+    setConnectionStatus(
+      setChatConnectionState,
+      setChatConnectionDetail,
+      nextState,
+      detail,
     )
-    setChatConnectionDetail((current) => (current === detail ? current : detail))
   }
 
   const markChatRecovering = (detail: string) => {
-    setChatConnectionStatus(
+    applyChatConnectionStatus(
       chatConnectedOnceRef.current ? 'reconnecting' : 'connecting',
       detail,
     )
@@ -62,27 +86,39 @@ export function useChat() {
   const markChatLive = (detail: string) => {
     chatConnectionFailuresRef.current = 0
     chatConnectedOnceRef.current = true
-    setChatConnectionStatus('live', detail)
+    applyChatConnectionStatus('live', detail)
   }
 
   const markChatOffline = (detail: string) => {
-    setChatConnectionStatus('offline', detail)
+    applyChatConnectionStatus('offline', detail)
   }
 
-  const clearAuth = (notifyServer = true) => {
-    setAuthToken(null)
-    setAuthNickname(null)
-    setAuthIsAdmin(false)
-    setAuthNicknameInput('')
-    setAuthPasswordInput('')
-    setAuthError(null)
-    setChatNotice(null)
-    setMessageStatus(null)
+  const closeChatStream = () => {
     if (chatStreamRef.current) {
       chatStreamRef.current.close()
       chatStreamRef.current = null
     }
-    window.localStorage.removeItem(CHAT_STORAGE_KEY)
+  }
+
+  const clearAuthenticatedState = (preserveMessages = true) => {
+    setAuthSessionActive(false)
+    setAuthNickname(null)
+    setAuthIsAdmin(false)
+    viewerNicknameRef.current = null
+    setChatNotice(null)
+    setMessageStatus(null)
+    if (!preserveMessages) {
+      setChatMessages([])
+    }
+  }
+
+  const clearAuth = (notifyServer = true) => {
+    clearAuthenticatedState()
+    setHasHydratedSession(true)
+    setAuthNicknameInput('')
+    setAuthPasswordInput('')
+    setAuthError(null)
+    closeChatStream()
     if (notifyServer) {
       void api.chat.logout().catch((error) => {
         console.warn('Failed to clear chat session cookie', error)
@@ -231,56 +267,56 @@ export function useChat() {
     })
   })
 
-  const fetchMessages = useEffectEvent(async () => {
-    if (!authToken) {
-      return false
+  const applyAuthenticatedPayload = (payload: ChatMessagesPayload) => {
+    setChatMessages(Array.isArray(payload.messages) ? payload.messages : [])
+    if (payload.user) {
+      setAuthSessionActive(true)
+      setAuthNickname(payload.user.nickname)
+      setAuthIsAdmin(payload.user.isAdmin)
+      viewerNicknameRef.current = payload.user.nickname
     }
+  }
 
+  const fetchAuthenticatedMessages = useEffectEvent(async (
+    mode: 'bootstrap' | 'authenticated',
+  ): Promise<SessionFetchResult> => {
     setChatLoading(true)
     markChatRecovering(
-      chatConnectedOnceRef.current
-        ? 'Reconnecting to signed-in chat...'
-        : 'Connecting to signed-in chat...',
+      mode === 'bootstrap'
+        ? 'Checking your chat session...'
+        : chatConnectedOnceRef.current
+          ? 'Reconnecting to signed-in chat...'
+          : 'Connecting to signed-in chat...',
     )
 
     try {
-      const { data, response } = await api.chat.getMessages(authToken)
+      const { data, response } = await api.chat.getMessages()
 
       if (response.status === 401) {
-        clearAuth()
-        return false
+        clearAuthenticatedState()
+        return 'guest'
       }
+
       if (response.status === 403) {
-        clearAuth()
+        clearAuthenticatedState()
         setChatError('your account has been banned')
-        return false
+        return 'banned'
       }
 
       if (!response.ok) {
         throw new Error('Failed to load messages')
       }
 
-      const payload = data as ChatMessagesPayload
-      setChatMessages(payload.messages)
-      if (payload.user) {
-        setAuthNickname(payload.user.nickname)
-        setAuthIsAdmin(payload.user.isAdmin)
-        window.localStorage.setItem(
-          CHAT_STORAGE_KEY,
-          JSON.stringify({
-            nickname: payload.user.nickname,
-            token: authToken,
-            isAdmin: payload.user.isAdmin,
-          }),
-        )
-      }
-      return true
+      applyAuthenticatedPayload(data as ChatMessagesPayload)
+      return 'authenticated'
     } catch (error) {
       console.warn('Failed to load chat messages', error)
       markChatOffline(
-        'Unable to load signed-in chat right now. Retrying automatically...',
+        mode === 'bootstrap'
+          ? 'Unable to check your chat session right now. Retrying automatically...'
+          : 'Unable to load signed-in chat right now. Retrying automatically...',
       )
-      return false
+      return 'failed'
     } finally {
       setChatLoading(false)
     }
@@ -301,7 +337,7 @@ export function useChat() {
       }
 
       const payload = data as ChatPublicMessagesPayload
-      setChatMessages(payload.messages)
+      setChatMessages(Array.isArray(payload.messages) ? payload.messages : [])
     } catch (error) {
       console.warn('Failed to load public chat messages', error)
       markChatOffline(
@@ -313,80 +349,69 @@ export function useChat() {
   })
 
   useEffect(() => {
-    const raw = window.localStorage.getItem(CHAT_STORAGE_KEY)
-    if (!raw) {
-      return
-    }
-
-    try {
-      const stored = JSON.parse(raw) as {
-        nickname?: string
-        token?: string
-        isAdmin?: boolean
-      }
-      if (stored?.token && stored?.nickname) {
-        setAuthToken(stored.token)
-        setAuthNickname(stored.nickname)
-        setAuthIsAdmin(Boolean(stored.isAdmin))
-      }
-    } catch (error) {
-      console.warn('Failed to read stored chat auth', error)
-    }
-  }, [])
-
-  useEffect(() => {
-    if (!authToken) {
-      if (chatStreamRef.current) {
-        chatStreamRef.current.close()
-        chatStreamRef.current = null
-      }
-      if (chatConnectedOnceRef.current) {
-        setChatConnectionState('reconnecting')
-        setChatConnectionDetail('Returning to public chat...')
-      } else {
-        setChatConnectionState('connecting')
-        setChatConnectionDetail('Connecting to public chat...')
-      }
-      void fetchPublicMessages()
-      const publicStream = new EventSource(api.chat.publicStreamUrl())
-      chatStreamRef.current = publicStream
-      attachChatStreamHandlers(publicStream, {
-        includePrivateEvents: false,
-        viewerNickname: null,
-      })
-
-      return () => {
-        publicStream.close()
-        if (chatStreamRef.current === publicStream) {
-          chatStreamRef.current = null
-        }
-      }
-    }
-
     let disposed = false
     let stream: EventSource | null = null
 
-    if (chatConnectedOnceRef.current) {
-      setChatConnectionState('reconnecting')
-      setChatConnectionDetail('Reconnecting to signed-in chat...')
-    } else {
-      setChatConnectionState('connecting')
-      setChatConnectionDetail('Connecting to signed-in chat...')
-    }
+    const connectPublicStream = async () => {
+      if (chatConnectedOnceRef.current) {
+        applyChatConnectionStatus('reconnecting', 'Returning to public chat...')
+      } else {
+        applyChatConnectionStatus('connecting', 'Connecting to public chat...')
+      }
 
-    void (async () => {
-      const canConnect = await fetchMessages()
-      if (!canConnect || disposed) {
+      await fetchPublicMessages()
+      if (disposed) {
         return
       }
 
-      stream = new EventSource(api.chat.privateStreamUrl())
+      stream = new EventSource(api.chat.publicStreamUrl())
       chatStreamRef.current = stream
       attachChatStreamHandlers(stream, {
-        includePrivateEvents: true,
-        viewerNickname: authNickname,
+        includePrivateEvents: false,
+        viewerNickname: null,
       })
-    })()
+    }
+
+    const connectPrivateStream = async (mode: 'bootstrap' | 'authenticated') => {
+      const result = await fetchAuthenticatedMessages(mode)
+      if (disposed) {
+        return
+      }
+
+      if (result === 'authenticated') {
+        stream = new EventSource(api.chat.privateStreamUrl())
+        chatStreamRef.current = stream
+        attachChatStreamHandlers(stream, {
+          includePrivateEvents: true,
+          viewerNickname: viewerNicknameRef.current,
+        })
+        return
+      }
+
+      if (mode === 'bootstrap') {
+        setHasHydratedSession(true)
+      }
+
+      if (result === 'guest' || result === 'banned') {
+        await connectPublicStream()
+      }
+    }
+
+    closeChatStream()
+
+    if (authSessionActive) {
+      if (chatConnectedOnceRef.current) {
+        applyChatConnectionStatus('reconnecting', 'Reconnecting to signed-in chat...')
+      } else {
+        applyChatConnectionStatus('connecting', 'Connecting to signed-in chat...')
+      }
+      void connectPrivateStream('authenticated')
+    } else if (!hasHydratedSession) {
+      applyChatConnectionStatus('connecting', 'Checking your chat session...')
+      void connectPrivateStream('bootstrap')
+    } else {
+      void connectPublicStream()
+    }
 
     return () => {
       disposed = true
@@ -395,7 +420,11 @@ export function useChat() {
         chatStreamRef.current = null
       }
     }
-  }, [authNickname, authToken, connectionRetryKey])
+  }, [
+    authSessionActive,
+    connectionRetryKey,
+    hasHydratedSession,
+  ])
 
   useEffect(() => {
     if (!chatScrollRef.current) {
@@ -445,7 +474,7 @@ export function useChat() {
     }
   }, [])
 
-  const handleAuthSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+  const handleAuthSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     setAuthError(null)
     setAuthLoading(true)
@@ -458,26 +487,21 @@ export function useChat() {
       )
       const parsedPayload = payload as ChatAuthPayload
 
-      if (!response.ok || !parsedPayload.token || !parsedPayload.nickname) {
+      if (!response.ok || !parsedPayload.nickname) {
         setAuthError(parsedPayload.error || 'Unable to sign in. Check your details.')
         return
       }
 
-      setAuthToken(parsedPayload.token)
+      setAuthSessionActive(true)
+      setHasHydratedSession(true)
       setAuthNickname(parsedPayload.nickname)
       setAuthIsAdmin(Boolean(parsedPayload.isAdmin))
+      viewerNicknameRef.current = parsedPayload.nickname
       setAuthPasswordInput('')
       setMessageBody('')
       setChatNotice(null)
+      setChatError(null)
       setMessageStatus(null)
-      window.localStorage.setItem(
-        CHAT_STORAGE_KEY,
-        JSON.stringify({
-          nickname: parsedPayload.nickname,
-          token: parsedPayload.token,
-          isAdmin: Boolean(parsedPayload.isAdmin),
-        }),
-      )
     } catch (error) {
       console.warn('Auth failed', error)
       setAuthError('Unable to sign in. Try again in a moment.')
@@ -486,9 +510,9 @@ export function useChat() {
     }
   }
 
-  const handleSendMessage = async (event: React.FormEvent<HTMLFormElement>) => {
+  const handleSendMessage = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    if (!authToken) {
+    if (!authSessionActive) {
       return
     }
 
@@ -511,10 +535,7 @@ export function useChat() {
     }
 
     try {
-      const { data: payload, response } = await api.chat.sendMessage(
-        authToken,
-        trimmed,
-      )
+      const { data: payload, response } = await api.chat.sendMessage(trimmed)
 
       if (response.status === 401) {
         clearAuth()
@@ -591,13 +612,12 @@ export function useChat() {
 
   const retryChatConnection = () => {
     chatConnectionFailuresRef.current = 0
-    if (chatStreamRef.current) {
-      chatStreamRef.current.close()
-      chatStreamRef.current = null
-    }
+    closeChatStream()
 
-    if (authToken) {
+    if (authSessionActive) {
       markChatRecovering('Retrying signed-in chat...')
+    } else if (!hasHydratedSession) {
+      markChatRecovering('Retrying chat session check...')
     } else {
       markChatRecovering('Retrying public chat...')
     }
@@ -613,7 +633,7 @@ export function useChat() {
     authNickname,
     authNicknameInput,
     authPasswordInput,
-    authToken,
+    authSessionActive,
     chatConnectionDetail,
     chatConnectionState,
     chatError,
@@ -625,7 +645,10 @@ export function useChat() {
     clearAuth,
     cooldownRemaining,
     cooldownUntil,
+    handleAuthNicknameChange,
+    handleAuthPasswordChange,
     handleAuthSubmit,
+    handleMessageBodyChange,
     handleSendMessage,
     messageBody,
     messageSending,
@@ -636,9 +659,6 @@ export function useChat() {
     retryChatConnection,
     setAuthError,
     setChatError,
-    handleAuthNicknameChange,
-    handleAuthPasswordChange,
-    handleMessageBodyChange,
     toggleAuthMode,
   }
 }

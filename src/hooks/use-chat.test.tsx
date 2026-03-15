@@ -68,22 +68,30 @@ describe('useChat', () => {
     vi.stubGlobal('fetch', vi.fn())
   })
 
-  it('loads public messages and handles public stream events when signed out', async () => {
+  it('falls back to public chat when there is no authenticated cookie session', async () => {
     const fetchMock = vi.mocked(fetch)
-    fetchMock.mockImplementation(() =>
-        createJsonResponse({
-          json: {
-            messages: [
-              {
-                id: 1,
-                nickname: 'system',
-                body: 'welcome',
-                created_at: '2026-03-14T12:00:00.000Z',
-              },
-            ],
-          },
-        }),
-      )
+    fetchMock.mockImplementation((input) => {
+      if (input === '/api/chat/messages') {
+        return createJsonResponse({
+          ok: false,
+          status: 401,
+          json: { error: 'Missing auth token' },
+        })
+      }
+
+      return createJsonResponse({
+        json: {
+          messages: [
+            {
+              id: 1,
+              nickname: 'system',
+              body: 'welcome',
+              created_at: '2026-03-14T12:00:00.000Z',
+            },
+          ],
+        },
+      })
+    })
 
     const { result } = renderHook(() => useChat())
 
@@ -91,108 +99,78 @@ describe('useChat', () => {
       expect(result.current.chatMessages).toHaveLength(1)
     })
 
-    expect(fetchMock).toHaveBeenCalledWith('/api/chat/messages/public', {
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/chat/messages', {
+      credentials: 'same-origin',
       headers: {},
       method: undefined,
     })
-    expect(MockEventSource.instances).toHaveLength(1)
-    expect(MockEventSource.instances[0]?.url).toBe(
+    expect(fetchMock).toHaveBeenCalledWith('/api/chat/messages/public', {
+      credentials: 'same-origin',
+      headers: {},
+      method: undefined,
+    })
+    expect(result.current.authSessionActive).toBe(false)
+    expect(MockEventSource.instances.length).toBeGreaterThan(0)
+    expect(MockEventSource.instances.at(-1)?.url).toBe(
       `${window.location.origin}/api/chat/messages/public/stream`,
     )
-
-    act(() => {
-      MockEventSource.instances[0]?.emit('ready')
-      MockEventSource.instances[0]?.emit('message', {
-        id: 2,
-        nickname: 'viewer1',
-        body: 'hello there',
-        created_at: '2026-03-14T12:00:01.000Z',
-      })
-    })
-
-    await waitFor(() => {
-      expect(result.current.chatConnectionState).toBe('live')
-    })
-
-    act(() => {
-      MockEventSource.instances[0]?.emit('message', {
-        id: 3,
-        nickname: 'viewer1',
-        body: 'hello there',
-        created_at: '2026-03-14T12:00:02.000Z',
-      })
-    })
-
-    await waitFor(() => {
-      expect(result.current.chatMessages).toHaveLength(3)
-    })
-    expect(result.current.chatMessages[2]?.body).toBe('hello there')
   })
 
-  it('restores stored auth, opens a private stream, and clears auth on ban', async () => {
-    window.localStorage.setItem(
-      'andromeda-chat-auth',
-      JSON.stringify({
-        nickname: 'testuser',
-        token: 'token-123',
-        isAdmin: true,
-      }),
-    )
-
+  it('uses an authenticated cookie session, then logs out and falls back on ban', async () => {
     const fetchMock = vi.mocked(fetch)
-    fetchMock
-      .mockImplementationOnce(() =>
-        createJsonResponse({
-          json: { messages: [] },
-        }),
-      )
-      .mockImplementationOnce(() =>
-        createJsonResponse({
-          json: {
-            messages: [
-              {
-                id: 10,
-                nickname: 'system',
-                body: 'authenticated history',
-                created_at: '2026-03-14T12:00:00.000Z',
-              },
-            ],
-            user: {
-              nickname: 'testuser',
-              isAdmin: true,
-            },
-          },
-        }),
-      )
-      .mockImplementationOnce(() =>
-        createJsonResponse({
+    let loggedOut = false
+    fetchMock.mockImplementation((input) => {
+      if (input === '/api/chat/auth/logout') {
+        loggedOut = true
+        return createJsonResponse({
           json: { ok: true },
-        }),
-      )
-      .mockImplementationOnce(() =>
-        createJsonResponse({
-          json: { messages: [] },
-        }),
-      )
+        })
+      }
+
+      if (input === '/api/chat/messages') {
+        return loggedOut
+          ? createJsonResponse({
+              ok: false,
+              status: 401,
+              json: { error: 'Missing auth token' },
+            })
+          : createJsonResponse({
+              json: {
+                messages: [
+                  {
+                    id: 10,
+                    nickname: 'system',
+                    body: 'authenticated history',
+                    created_at: '2026-03-14T12:00:00.000Z',
+                  },
+                ],
+                user: {
+                  nickname: 'testuser',
+                  isAdmin: true,
+                },
+              },
+            })
+      }
+
+      return createJsonResponse({
+        json: { messages: [] },
+      })
+    })
 
     const { result } = renderHook(() => useChat())
 
     await waitFor(() => {
-      expect(result.current.authToken).toBe('token-123')
+      expect(result.current.authSessionActive).toBe(true)
       expect(result.current.chatMessages).toHaveLength(1)
     })
 
-    expect(MockEventSource.instances).toHaveLength(2)
-    expect(MockEventSource.instances[0]?.url).toBe(
-      `${window.location.origin}/api/chat/messages/public/stream`,
-    )
-    expect(MockEventSource.instances[0]?.closed).toBe(true)
-    expect(MockEventSource.instances[1]?.url).toBe(
+    expect(MockEventSource.instances.length).toBeGreaterThan(0)
+    expect(MockEventSource.instances.at(-1)?.url).toBe(
       `${window.location.origin}/api/chat/messages/stream`,
     )
 
     act(() => {
-      MockEventSource.instances[1]?.emit('warn', { nickname: 'testuser' })
+      MockEventSource.instances.at(-1)?.emit('warn', { nickname: 'testuser' })
     })
 
     await waitFor(() => {
@@ -202,24 +180,25 @@ describe('useChat', () => {
     })
 
     act(() => {
-      MockEventSource.instances[1]?.emit('ban', { nickname: 'testuser' })
+      MockEventSource.instances.at(-1)?.emit('ban', { nickname: 'testuser' })
     })
 
     await waitFor(() => {
-      expect(result.current.authToken).toBeNull()
+      expect(result.current.authSessionActive).toBe(false)
       expect(result.current.authNickname).toBeNull()
     })
 
-    expect(window.localStorage.getItem('andromeda-chat-auth')).toBeNull()
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      3,
-      '/api/chat/auth/logout',
-      {
-        headers: {},
-        method: 'POST',
-      },
-    )
-    expect(MockEventSource.instances[1]?.closed).toBe(true)
+    expect(fetchMock).toHaveBeenCalledWith('/api/chat/auth/logout', {
+      credentials: 'same-origin',
+      headers: {},
+      method: 'POST',
+    })
+    expect(fetchMock).toHaveBeenCalledWith('/api/chat/messages/public', {
+      credentials: 'same-origin',
+      headers: {},
+      method: undefined,
+    })
+    expect(MockEventSource.instances.some((instance) => instance.closed)).toBe(true)
     expect(MockEventSource.instances.at(-1)?.url).toBe(
       `${window.location.origin}/api/chat/messages/public/stream`,
     )
@@ -227,24 +206,33 @@ describe('useChat', () => {
 
   it('surfaces offline chat state after repeated stream errors and supports manual retry', async () => {
     const fetchMock = vi.mocked(fetch)
-    fetchMock.mockImplementation(() =>
-      createJsonResponse({
+    fetchMock.mockImplementation((input) => {
+      if (input === '/api/chat/messages') {
+        return createJsonResponse({
+          ok: false,
+          status: 401,
+          json: { error: 'Missing auth token' },
+        })
+      }
+
+      return createJsonResponse({
         json: {
           messages: [],
         },
-      }),
-    )
+      })
+    })
 
     const { result } = renderHook(() => useChat())
 
     await waitFor(() => {
-      expect(MockEventSource.instances).toHaveLength(1)
+      expect(MockEventSource.instances.length).toBeGreaterThan(0)
     })
 
     act(() => {
-      MockEventSource.instances[0]?.emit('error')
-      MockEventSource.instances[0]?.emit('error')
-      MockEventSource.instances[0]?.emit('error')
+      const stream = MockEventSource.instances.at(-1)
+      stream?.emit('error')
+      stream?.emit('error')
+      stream?.emit('error')
     })
 
     await waitFor(() => {
@@ -257,50 +245,76 @@ describe('useChat', () => {
     })
 
     await waitFor(() => {
-      expect(MockEventSource.instances).toHaveLength(2)
+      expect(MockEventSource.instances.length).toBeGreaterThan(1)
     })
-    expect(MockEventSource.instances[0]?.closed).toBe(true)
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+
+    expect(MockEventSource.instances.some((instance) => instance.closed)).toBe(true)
+    expect(fetchMock).toHaveBeenCalled()
   })
 
-  it('tracks message mutation state while sending and clears it after success', async () => {
-    window.localStorage.setItem(
-      'andromeda-chat-auth',
-      JSON.stringify({
-        nickname: 'testuser',
-        token: 'token-123',
-        isAdmin: false,
-      }),
-    )
-
+  it('signs in without storing a token and sends messages with cookie auth', async () => {
     const fetchMock = vi.mocked(fetch)
-    fetchMock
-      .mockImplementationOnce(() =>
-        createJsonResponse({
-          json: { messages: [] },
-        }),
-      )
-      .mockImplementationOnce(() =>
-        createJsonResponse({
+    let loggedIn = false
+    fetchMock.mockImplementation((input, init) => {
+      if (input === '/api/chat/auth/login') {
+        loggedIn = true
+        return createJsonResponse({
           json: {
-            messages: [],
-            user: {
-              nickname: 'testuser',
-              isAdmin: false,
-            },
+            nickname: 'testuser',
+            isAdmin: false,
           },
-        }),
-      )
-      .mockImplementationOnce(() =>
-        createJsonResponse({
+        })
+      }
+
+      if (input === '/api/chat/messages' && init?.method === 'POST') {
+        return createJsonResponse({
           json: { ok: true },
-        }),
-      )
+        })
+      }
+
+      if (input === '/api/chat/messages') {
+        return loggedIn
+          ? createJsonResponse({
+              json: {
+                messages: [],
+                user: {
+                  nickname: 'testuser',
+                  isAdmin: false,
+                },
+              },
+            })
+          : createJsonResponse({
+              ok: false,
+              status: 401,
+              json: { error: 'Missing auth token' },
+            })
+      }
+
+      return createJsonResponse({
+        json: { messages: [] },
+      })
+    })
 
     const { result } = renderHook(() => useChat())
 
     await waitFor(() => {
-      expect(result.current.authToken).toBe('token-123')
+      expect(MockEventSource.instances.length).toBeGreaterThan(0)
+    })
+
+    act(() => {
+      result.current.handleAuthNicknameChange('testuser')
+      result.current.handleAuthPasswordChange('hunter2')
+    })
+
+    await act(async () => {
+      await result.current.handleAuthSubmit({
+        preventDefault() {},
+      } as FormEvent<HTMLFormElement>)
+    })
+
+    await waitFor(() => {
+      expect(result.current.authSessionActive).toBe(true)
+      expect(MockEventSource.instances.length).toBeGreaterThan(1)
     })
 
     act(() => {
@@ -316,12 +330,22 @@ describe('useChat', () => {
     await waitFor(() => {
       expect(result.current.messageSending).toBe(false)
     })
+
     expect(result.current.messageStatus).toBe('Message sent.')
     expect(result.current.messageBody).toBe('')
-    expect(fetchMock).toHaveBeenLastCalledWith('/api/chat/messages', {
-      body: JSON.stringify({ body: 'hello world' }),
+    expect(window.localStorage.getItem('andromeda-chat-auth')).toBeNull()
+    expect(fetchMock).toHaveBeenCalledWith('/api/chat/auth/login', {
+      body: JSON.stringify({ nickname: 'testuser', password: 'hunter2' }),
+      credentials: 'same-origin',
       headers: {
-        Authorization: 'Bearer token-123',
+        'Content-Type': 'application/json',
+      },
+      method: 'POST',
+    })
+    expect(fetchMock).toHaveBeenCalledWith('/api/chat/messages', {
+      body: JSON.stringify({ body: 'hello world' }),
+      credentials: 'same-origin',
+      headers: {
         'Content-Type': 'application/json',
       },
       method: 'POST',

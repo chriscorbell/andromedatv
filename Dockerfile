@@ -10,21 +10,21 @@ RUN --mount=type=cache,target=/root/.bun/install/cache \
   bun install --frozen-lockfile
 RUN bun run build
 
-FROM node:20-slim AS server-build
+FROM oven/bun:1 AS server-build
 WORKDIR /app/server
 
-COPY server/package.json server/package-lock.json ./
+COPY server/package.json server/bun.lock ./
 
-RUN --mount=type=cache,target=/root/.npm \
+RUN --mount=type=cache,target=/root/.bun/install/cache \
   apt-get update \
   && apt-get install -y --no-install-recommends python3 make g++ \
-  && npm ci \
+  && bun install --frozen-lockfile \
   && apt-get purge -y --auto-remove python3 make g++ \
   && rm -rf /var/lib/apt/lists/*
 
 COPY server/ ./
-RUN npm run build
-RUN npm prune --omit=dev
+RUN bun run build
+RUN rm -rf node_modules && bun install --frozen-lockfile --production
 
 FROM node:20-slim AS runtime
 WORKDIR /app

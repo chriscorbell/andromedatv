@@ -10,7 +10,6 @@ import type {
 
 type UseAdminControlsOptions = {
   authIsAdmin: boolean
-  authToken: string | null
   onRedactMessagesByNickname: (nickname: string) => void
   onRemoveMessagesByNickname: (nickname: string) => void
   onReplaceDeletedMessage: (messageId: number) => void
@@ -70,7 +69,6 @@ const getAdminConfirmCopy = (action: AdminAction | null) => {
 
 export function useAdminControls({
   authIsAdmin,
-  authToken,
   onRedactMessagesByNickname,
   onRemoveMessagesByNickname,
   onReplaceDeletedMessage,
@@ -104,7 +102,7 @@ export function useAdminControls({
   const [adminUserLoading, setAdminUserLoading] = useState(false)
 
   const fetchAdminUsers = useCallback(async (view: 'active' | 'banned') => {
-    if (!authToken || !authIsAdmin) {
+    if (!authIsAdmin) {
       setAdminMenuOpen(false)
       setChatError('Admin authorization required.')
       return
@@ -113,7 +111,7 @@ export function useAdminControls({
     setAdminUserLoading(true)
     try {
       const endpoint = view === 'active' ? 'active' : 'banned'
-      const { data, response } = await api.admin.getUsers(endpoint, authToken)
+      const { data, response } = await api.admin.getUsers(endpoint)
 
       if (!response.ok) {
         if (response.status === 401 || response.status === 403) {
@@ -132,7 +130,7 @@ export function useAdminControls({
     } finally {
       setAdminUserLoading(false)
     }
-  }, [authIsAdmin, authToken, setChatError])
+  }, [authIsAdmin, setChatError])
 
   const openAdminConfirm = useCallback((
     action: AdminAction,
@@ -149,14 +147,14 @@ export function useAdminControls({
   }, [authIsAdmin])
 
   const performAdminAction = useCallback(async (action: AdminAction) => {
-    if (!authToken || !authIsAdmin) {
+    if (!authIsAdmin) {
       setChatError('Admin authorization required.')
       return
     }
 
     try {
       if (action.kind === 'clear') {
-        const { response } = await api.admin.clear(authToken)
+        const { response } = await api.admin.clear()
 
         if (!response.ok) {
           if (response.status === 401 || response.status === 403) {
@@ -172,7 +170,7 @@ export function useAdminControls({
       }
 
       if (action.kind === 'delete') {
-        const { response } = await api.admin.deleteMessage(action.messageId, authToken)
+        const { response } = await api.admin.deleteMessage(action.messageId)
 
         if (!response.ok) {
           if (response.status === 401 || response.status === 403) {
@@ -189,7 +187,7 @@ export function useAdminControls({
       }
 
       if (action.kind === 'warn') {
-        const { response } = await api.admin.warnUser(action.messageId, authToken)
+        const { response } = await api.admin.warnUser(action.messageId)
 
         if (!response.ok) {
           if (response.status === 401 || response.status === 403) {
@@ -206,7 +204,7 @@ export function useAdminControls({
       }
 
       if (action.kind === 'ban') {
-        const { response } = await api.admin.banUser(action.nickname, authToken)
+        const { response } = await api.admin.banUser(action.nickname)
 
         if (!response.ok) {
           if (response.status === 401 || response.status === 403) {
@@ -223,7 +221,7 @@ export function useAdminControls({
       }
 
       if (action.kind === 'unban') {
-        const { response } = await api.admin.unbanUser(action.nickname, authToken)
+        const { response } = await api.admin.unbanUser(action.nickname)
 
         if (!response.ok) {
           if (response.status === 401 || response.status === 403) {
@@ -238,7 +236,7 @@ export function useAdminControls({
         return
       }
 
-      const { response } = await api.admin.deleteUser(action.nickname, authToken)
+      const { response } = await api.admin.deleteUser(action.nickname)
 
       if (!response.ok) {
         if (response.status === 401 || response.status === 403) {
@@ -257,7 +255,6 @@ export function useAdminControls({
     }
   }, [
     authIsAdmin,
-    authToken,
     onRedactMessagesByNickname,
     onRemoveMessagesByNickname,
     onReplaceDeletedMessage,

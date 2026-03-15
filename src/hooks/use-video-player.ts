@@ -1,12 +1,24 @@
 import { useEffect, useRef, useState } from 'react'
 import type Hls from 'hls.js/light'
+import { useVideoPlayerControls } from './use-video-player-controls'
 
 const HLS_URL = '/iptv/session/1/hls.m3u8'
-const HLS_WARMUP_DELAY_MS = 150
+const PLAYBACK_WATCHDOG_INTERVAL_MS = 10_000
+const PLAYBACK_DEBUG_STORAGE_KEY = 'andromeda:playback-debug'
 
 type HlsCtor = typeof import('hls.js/light').default
-type IdleCallbackHandle = number
 type PlaybackState = 'connecting' | 'live' | 'reconnecting' | 'offline'
+type PlaybackTransport = 'native' | 'hls'
+
+type PlaybackMetric = {
+  attempt: number
+  detail?: string
+  durationMs?: number
+  event: string
+  phase: 'recovery' | 'startup'
+  transport: PlaybackTransport
+  ts: string
+}
 
 let cachedHlsCtor: HlsCtor | null = null
 let cachedHlsCtorPromise: Promise<HlsCtor | null> | null = null
@@ -40,21 +52,62 @@ async function loadSharedHlsCtor() {
   return cachedHlsCtorPromise
 }
 
+function shouldRecordPlaybackMetrics() {
+  if (import.meta.env.DEV) {
+    return true
+  }
+
+  try {
+    return window.localStorage.getItem(PLAYBACK_DEBUG_STORAGE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function recordPlaybackMetric(metric: PlaybackMetric) {
+  if (!shouldRecordPlaybackMetrics()) {
+    return
+  }
+
+  const payload = {
+    scope: 'andromeda.playback',
+    ...metric,
+  }
+
+  const metricsWindow = window as Window & {
+    __andromedaPlaybackMetrics?: PlaybackMetric[]
+  }
+  const existingMetrics = metricsWindow.__andromedaPlaybackMetrics ?? []
+  metricsWindow.__andromedaPlaybackMetrics = [...existingMetrics.slice(-24), metric]
+  console.info('[andromeda.playback]', payload)
+}
+
 export function useVideoPlayer() {
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const videoFrameRef = useRef<HTMLDivElement | null>(null)
   const hlsRef = useRef<Hls | null>(null)
   const hlsRestartTimeoutRef = useRef<number | null>(null)
   const playbackRetryTimeoutRef = useRef<number | null>(null)
-  const hideTimeoutRef = useRef<number | null>(null)
   const forcePlaybackRecoveryRef = useRef<() => void>(() => {})
-  const [isMuted, setIsMuted] = useState(true)
-  const [volume, setVolume] = useState(0.6)
-  const [controlsVisible, setControlsVisible] = useState(false)
   const [playbackState, setPlaybackState] = useState<PlaybackState>('connecting')
   const [playbackStatusDetail, setPlaybackStatusDetail] = useState(
     'Connecting to live stream...',
   )
+  const {
+    controlsVisible,
+    handleFullscreen,
+    handleRetryPlayback,
+    handleToggleMute,
+    handleVolumeChange,
+    isMuted,
+    scheduleHideControls,
+    showControls,
+    volume,
+  } = useVideoPlayerControls({
+    forcePlaybackRecoveryRef,
+    videoFrameRef,
+    videoRef,
+  })
 
   useEffect(() => {
     const video = videoRef.current
@@ -90,18 +143,25 @@ export function useVideoPlayer() {
     }
 
     let recoveryInProgress = false
-    let playbackWatchdog: number | null = null
+    let playbackWatchdogTimeout: number | null = null
     let startupRestartTimeout: number | null = null
     let lastPlaybackTime = 0
     let stalledChecks = 0
     let recoveryAttempts = 0
+    let startupAttempts = 0
     let manifestLoaded = false
     let playbackStarted = false
     let playbackStartedOnce = false
     let disposed = false
     let hlsSupportKnown = supportsNativeHls
-    let warmupTimeoutId: number | null = null
-    let warmupIdleHandle: IdleCallbackHandle | null = null
+    let activePlaybackAttempt:
+      | {
+          attempt: number
+          phase: 'recovery' | 'startup'
+          startedAtMs: number
+          transport: PlaybackTransport
+        }
+      | null = null
 
     const setPlaybackUiState = (
       nextState: PlaybackState,
@@ -137,6 +197,81 @@ export function useVideoPlayer() {
         window.clearTimeout(startupRestartTimeout)
         startupRestartTimeout = null
       }
+    }
+
+    const clearPlaybackWatchdog = () => {
+      if (playbackWatchdogTimeout !== null) {
+        window.clearTimeout(playbackWatchdogTimeout)
+        playbackWatchdogTimeout = null
+      }
+    }
+
+    const beginPlaybackAttempt = (
+      phase: 'recovery' | 'startup',
+      transport: PlaybackTransport,
+      detail: string,
+    ) => {
+      let attempt = 1
+      if (phase === 'startup') {
+        startupAttempts += 1
+        attempt = startupAttempts
+      } else {
+        attempt = Math.max(1, recoveryAttempts)
+      }
+
+      activePlaybackAttempt = {
+        attempt,
+        phase,
+        startedAtMs: performance.now(),
+        transport,
+      }
+
+      recordPlaybackMetric({
+        attempt,
+        detail,
+        event: 'attempt_started',
+        phase,
+        transport,
+        ts: new Date().toISOString(),
+      })
+    }
+
+    const completePlaybackAttempt = (detail: string) => {
+      if (!activePlaybackAttempt) {
+        return
+      }
+
+      const completedAttempt = activePlaybackAttempt
+      activePlaybackAttempt = null
+
+      recordPlaybackMetric({
+        attempt: completedAttempt.attempt,
+        detail,
+        durationMs: Math.round(performance.now() - completedAttempt.startedAtMs),
+        event: 'attempt_succeeded',
+        phase: completedAttempt.phase,
+        transport: completedAttempt.transport,
+        ts: new Date().toISOString(),
+      })
+    }
+
+    const failPlaybackAttempt = (detail: string) => {
+      if (!activePlaybackAttempt) {
+        return
+      }
+
+      const failedAttempt = activePlaybackAttempt
+      activePlaybackAttempt = null
+
+      recordPlaybackMetric({
+        attempt: failedAttempt.attempt,
+        detail,
+        durationMs: Math.round(performance.now() - failedAttempt.startedAtMs),
+        event: 'attempt_degraded',
+        phase: failedAttempt.phase,
+        transport: failedAttempt.transport,
+        ts: new Date().toISOString(),
+      })
     }
 
     const loadHlsCtor = async () => {
@@ -215,12 +350,14 @@ export function useVideoPlayer() {
       stalledChecks = 0
       lastPlaybackTime = video.currentTime
       setPlaybackUiState('live', 'Live now')
+      completePlaybackAttempt('Playback reached the live state.')
       clearPlaybackRetryTimer()
       clearStartupRestartTimer()
     }
 
     const restartStream = async (delay = 1500) => {
       recoveryAttempts += 1
+      failPlaybackAttempt('Scheduling a playback restart.')
       if (recoveryAttempts >= 3) {
         markOffline('Stream unavailable. Retrying automatically...')
       } else {
@@ -231,17 +368,22 @@ export function useVideoPlayer() {
       clearStartupRestartTimer()
       hlsRestartTimeoutRef.current = window.setTimeout(() => {
         if (supportsNativeHls) {
-          startNativeStream()
+          startNativeStream('Automatic recovery restart')
           return
         }
 
-        void startHls()
+        void startHls('Automatic recovery restart')
       }, delay)
     }
 
-    const startNativeStream = () => {
+    const startNativeStream = (detail = 'Starting native HLS playback') => {
       playbackStarted = false
       manifestLoaded = false
+      beginPlaybackAttempt(
+        playbackStartedOnce ? 'recovery' : 'startup',
+        'native',
+        detail,
+      )
       if (playbackStartedOnce) {
         markRecovering('Reconnecting to the live stream...')
       } else {
@@ -257,9 +399,14 @@ export function useVideoPlayer() {
       scheduleStartupRestart()
     }
 
-    const startHls = async () => {
+    const startHls = async (detail = 'Starting hls.js playback') => {
       playbackStarted = false
       manifestLoaded = false
+      beginPlaybackAttempt(
+        playbackStartedOnce ? 'recovery' : 'startup',
+        'hls',
+        detail,
+      )
       if (playbackStartedOnce) {
         markRecovering('Reconnecting to the live stream...')
       } else {
@@ -309,6 +456,8 @@ export function useVideoPlayer() {
           return
         }
 
+        failPlaybackAttempt(`Fatal ${data.type.toLowerCase()} error: ${data.details}`)
+
         if (data.type === HlsImpl.ErrorTypes.NETWORK_ERROR) {
           if (
             !playbackStarted ||
@@ -351,14 +500,6 @@ export function useVideoPlayer() {
       hls.attachMedia(video)
     }
 
-    const warmHlsChunk = () => {
-      if (supportsNativeHls) {
-        return
-      }
-
-      void loadHlsCtor()
-    }
-
     const nudgePlayback = () => {
       if (!video.paused || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
         markRecovering(
@@ -371,6 +512,50 @@ export function useVideoPlayer() {
         hlsRef.current.startLoad()
       }
       schedulePlaybackRetry(0)
+    }
+
+    const schedulePlaybackWatchdog = () => {
+      clearPlaybackWatchdog()
+      if (disposed || document.visibilityState === 'hidden') {
+        return
+      }
+
+      playbackWatchdogTimeout = window.setTimeout(() => {
+        playbackWatchdogTimeout = null
+
+        if (video.ended) {
+          lastPlaybackTime = video.currentTime
+          stalledChecks = 0
+          schedulePlaybackWatchdog()
+          return
+        }
+
+        if (video.paused) {
+          lastPlaybackTime = video.currentTime
+          stalledChecks = 0
+          if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+            schedulePlaybackRetry(0)
+          }
+          schedulePlaybackWatchdog()
+          return
+        }
+
+        const currentTime = video.currentTime
+        if (currentTime <= lastPlaybackTime + 0.01) {
+          stalledChecks += 1
+        } else {
+          stalledChecks = 0
+        }
+
+        lastPlaybackTime = currentTime
+
+        if (stalledChecks >= 3) {
+          stalledChecks = 0
+          nudgePlayback()
+        }
+
+        schedulePlaybackWatchdog()
+      }, PLAYBACK_WATCHDOG_INTERVAL_MS)
     }
 
     const handleWaiting = () => {
@@ -387,24 +572,31 @@ export function useVideoPlayer() {
     }
 
     const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible' && video.paused) {
-        nudgePlayback()
+      if (document.visibilityState === 'visible') {
+        if (video.paused) {
+          nudgePlayback()
+        }
+        schedulePlaybackWatchdog()
+        return
       }
+
+      clearPlaybackWatchdog()
     }
 
     forcePlaybackRecoveryRef.current = () => {
       recoveryAttempts = 0
+      failPlaybackAttempt('Manual playback retry requested.')
       markRecovering('Retrying the live stream...')
       clearRestartTimer()
       clearPlaybackRetryTimer()
       clearStartupRestartTimer()
 
       if (supportsNativeHls) {
-        startNativeStream()
+        startNativeStream('Manual retry')
         return
       }
 
-      void startHls()
+      void startHls('Manual retry')
     }
 
     video.addEventListener('loadedmetadata', handleReady)
@@ -416,57 +608,11 @@ export function useVideoPlayer() {
     document.addEventListener('visibilitychange', handleVisibilityChange)
 
     if (supportsNativeHls) {
-      startNativeStream()
+      startNativeStream('Initial player startup')
     } else {
-      const scheduleWarmup = () => {
-        if (window.requestIdleCallback) {
-          warmupIdleHandle = window.requestIdleCallback(() => {
-            warmupIdleHandle = null
-            warmHlsChunk()
-          })
-          return
-        }
-
-        warmupTimeoutId = window.setTimeout(() => {
-          warmupTimeoutId = null
-          warmHlsChunk()
-        }, HLS_WARMUP_DELAY_MS)
-      }
-
-      scheduleWarmup()
-      void startHls()
+      void startHls('Initial player startup')
     }
-
-    playbackWatchdog = window.setInterval(() => {
-      if (video.ended) {
-        lastPlaybackTime = video.currentTime
-        stalledChecks = 0
-        return
-      }
-
-      if (video.paused) {
-        lastPlaybackTime = video.currentTime
-        stalledChecks = 0
-        if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
-          schedulePlaybackRetry(0)
-        }
-        return
-      }
-
-      const currentTime = video.currentTime
-      if (currentTime <= lastPlaybackTime + 0.01) {
-        stalledChecks += 1
-      } else {
-        stalledChecks = 0
-      }
-
-      lastPlaybackTime = currentTime
-
-      if (stalledChecks >= 3) {
-        stalledChecks = 0
-        nudgePlayback()
-      }
-    }, 10_000)
+    schedulePlaybackWatchdog()
 
     return () => {
       disposed = true
@@ -477,98 +623,17 @@ export function useVideoPlayer() {
       video.removeEventListener('waiting', handleWaiting)
       video.removeEventListener('stalled', handleWaiting)
       document.removeEventListener('visibilitychange', handleVisibilityChange)
-      if (playbackWatchdog) {
-        window.clearInterval(playbackWatchdog)
-      }
+      clearPlaybackWatchdog()
       clearRestartTimer()
       clearPlaybackRetryTimer()
       clearStartupRestartTimer()
-      if (warmupTimeoutId) {
-        window.clearTimeout(warmupTimeoutId)
-      }
-      if (warmupIdleHandle !== null && window.cancelIdleCallback) {
-        window.cancelIdleCallback(warmupIdleHandle)
-      }
+      activePlaybackAttempt = null
       forcePlaybackRecoveryRef.current = () => {}
       destroyHls()
       video.removeAttribute('src')
       video.load()
     }
   }, [])
-
-  useEffect(() => {
-    if (!videoRef.current) {
-      return
-    }
-
-    videoRef.current.muted = isMuted
-  }, [isMuted])
-
-  useEffect(() => {
-    if (!videoRef.current) {
-      return
-    }
-
-    videoRef.current.volume = volume
-  }, [volume])
-
-  useEffect(() => {
-    return () => {
-      if (hideTimeoutRef.current) {
-        window.clearTimeout(hideTimeoutRef.current)
-      }
-    }
-  }, [])
-
-  const handleToggleMute = () => {
-    setIsMuted((prev) => !prev)
-  }
-
-  const handleVolumeChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const next = Number(event.target.value)
-    setVolume(next)
-    if (next > 0 && isMuted) {
-      setIsMuted(false)
-    }
-  }
-
-  const handleFullscreen = () => {
-    const frame = videoFrameRef.current
-    if (!frame) {
-      return
-    }
-
-    if (document.fullscreenElement) {
-      void document.exitFullscreen()
-      return
-    }
-
-    void frame.requestFullscreen()
-  }
-
-  const showControls = () => {
-    setControlsVisible(true)
-    if (hideTimeoutRef.current) {
-      window.clearTimeout(hideTimeoutRef.current)
-    }
-    hideTimeoutRef.current = window.setTimeout(() => {
-      setControlsVisible(false)
-    }, 2200)
-  }
-
-  const scheduleHideControls = () => {
-    if (hideTimeoutRef.current) {
-      window.clearTimeout(hideTimeoutRef.current)
-    }
-    hideTimeoutRef.current = window.setTimeout(() => {
-      setControlsVisible(false)
-    }, 600)
-  }
-
-  const handleRetryPlayback = () => {
-    forcePlaybackRecoveryRef.current()
-    showControls()
-  }
 
   return {
     controlsVisible,
