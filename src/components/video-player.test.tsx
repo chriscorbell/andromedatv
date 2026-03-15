@@ -50,13 +50,13 @@ describe('VideoPlayer', () => {
       vi.advanceTimersByTime(1)
     })
     expect(screen.getByRole('status')).toHaveTextContent(
-      'Connecting to live stream...',
+      'connecting to live stream...',
     )
-    expect(screen.getByText('Connecting to live stream...')).toBeInTheDocument()
+    expect(screen.getByText('connecting to live stream...')).toBeInTheDocument()
     expect(screen.queryByText('Live playback')).not.toBeInTheDocument()
     expect(screen.queryByText('Connecting stream')).not.toBeInTheDocument()
     expect(
-      screen.queryByRole('button', { name: 'Retry now' }),
+      screen.queryByRole('button', { name: 'retry now' }),
     ).not.toBeInTheDocument()
   })
 
@@ -74,11 +74,11 @@ describe('VideoPlayer', () => {
       vi.advanceTimersByTime(5000)
     })
     expect(screen.getByRole('alert')).toHaveTextContent(
-      'Stream unavailable. Retrying automatically...',
+      'stream unavailable. retrying automatically...',
     )
     expect(screen.queryByText('Live playback')).not.toBeInTheDocument()
     expect(screen.queryByText('Stream unavailable')).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Retry now' }))
+    fireEvent.click(screen.getByRole('button', { name: 'retry now' }))
     expect(handleRetryPlayback).toHaveBeenCalledTimes(1)
   })
 

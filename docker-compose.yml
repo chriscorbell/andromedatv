@@ -2,6 +2,7 @@ services:
   andromedatv:
     container_name: andromedatv
     restart: unless-stopped
+    user: "1000:1000"
     build:
       context: .
       dockerfile: Dockerfile

@@ -45,6 +45,7 @@ export function VideoPlayer({
       ? 'border-rose-500/40 bg-rose-500/12 text-rose-100'
       : 'border-sky-500/40 bg-black/72 text-zinc-100'
   const playbackRole = playbackState === 'offline' ? 'alert' : 'status'
+  const playbackMessage = playbackStatusDetail.toLowerCase()
 
   useEffect(() => {
     if (!isPlaybackDegraded) {
@@ -97,16 +98,16 @@ export function VideoPlayer({
               className={`pointer-events-auto flex w-full max-w-sm flex-col gap-3 border px-4 py-4 shadow-[0_0_32px_rgba(0,0,0,0.35)] backdrop-blur-sm ${playbackAccentClass}`}
             >
               <p className="text-sm leading-relaxed text-zinc-200">
-                {playbackStatusDetail}
+                {playbackMessage}
               </p>
               {canRetryPlayback && (
                 <div className="flex justify-end">
                   <button
                     type="button"
-                    className="border border-zinc-500 bg-black/40 px-3 py-1.5 text-[11px] uppercase tracking-[0.2em] text-zinc-100 transition hover:border-zinc-300"
+                    className="border border-zinc-500 bg-black/40 px-3 py-1.5 text-[11px] text-zinc-100 transition hover:border-zinc-300"
                     onClick={onRetryPlayback}
                   >
-                    Retry now
+                    retry now
                   </button>
                 </div>
               )}
