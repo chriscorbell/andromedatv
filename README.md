@@ -73,6 +73,12 @@ INITIAL_ADMIN_PASSWORD=replace_me # Required - must be set together with INITIAL
 
 CORS_ORIGIN=https://yourdomain.com # Optional - default is "*"
 
+PUBLIC_APP_ORIGIN=https://yourdomain.com # Recommended behind a reverse proxy and for IPTV playlist rewriting
+
+STATUS_API_MODE=admin # Optional - "admin" (default), "public", or "disabled"
+
+TRUST_PROXY=true # Optional - only set when running behind a trusted reverse proxy
+
 JWT_SECRET=replace_me # Optional - if omitted, the app will generate and persist one under /data
 
 DB_PATH=/data/andromeda.db # Optional - default database path
@@ -82,6 +88,8 @@ DB_PATH=/data/andromeda.db # Optional - default database path
 The admin bootstrap only runs when there are no admin users in the database. After the first admin exists, those variables are ignored unless you reset the chat DB.
 
 If `JWT_SECRET` is omitted, the app writes a generated secret to `/data/jwt-secret` on first boot and reuses it on later starts. Keep the `/data` volume persistent so chat sessions remain valid across restarts.
+
+Set `PUBLIC_APP_ORIGIN` whenever the app is served through a reverse proxy or public hostname that differs from the backend listener. That keeps rewritten IPTV playlist URLs stable without trusting arbitrary forwarded headers. Only set `TRUST_PROXY` if the app is actually behind a proxy you control.
 
 ### 2) Start
 
@@ -117,6 +125,7 @@ App data is persisted via host bind mount:
 
 - App health: `/health`
 - Chat health: `/api/chat/health`
+- Diagnostics: `/api/status` (admin-authenticated by default; configure with `STATUS_API_MODE`)
 - Schedule API: `/api/schedule`
 - XMLTV via proxy: `/iptv/xmltv.xml`
 - HLS via proxy: `/iptv/session/1/hls.m3u8`

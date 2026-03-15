@@ -14,7 +14,6 @@ export type ChatMessage = {
 
 export type ChatAuthPayload = {
   nickname?: string
-  token?: string
   isAdmin?: boolean
   error?: string
 }
@@ -46,7 +45,6 @@ export type SchedulePayload = {
 }
 
 type JsonRequestOptions = {
-  authToken?: string | null
   body?: unknown
   credentials?: RequestCredentials
   headers?: HeadersInit
@@ -58,20 +56,9 @@ type JsonResult<T> = {
   response: Response
 }
 
-function getAuthHeaders(authToken?: string | null): HeadersInit {
-  if (!authToken) {
-    return {}
-  }
-
-  return {
-    Authorization: `Bearer ${authToken}`,
-  }
-}
-
 async function requestJson<T>(
   url: string,
   {
-    authToken,
     body,
     credentials = 'same-origin',
     headers,
@@ -83,7 +70,6 @@ async function requestJson<T>(
     method,
     headers: {
       ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
-      ...getAuthHeaders(authToken),
       ...headers,
     },
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
@@ -113,10 +99,8 @@ export const api = {
         method: 'POST',
       })
     },
-    async getMessages(authToken?: string | null) {
-      return requestJson<ChatMessagesPayload>(`${CHAT_API_URL}/messages`, {
-        authToken,
-      })
+    async getMessages() {
+      return requestJson<ChatMessagesPayload>(`${CHAT_API_URL}/messages`)
     },
     async getPublicMessages() {
       return requestJson<ChatPublicMessagesPayload>(`${CHAT_API_URL}/messages/public`)
@@ -137,12 +121,11 @@ export const api = {
         },
       )
     },
-    async sendMessage(body: string, authToken?: string | null) {
+    async sendMessage(body: string) {
       return requestJson<ChatMutationErrorPayload>(
         `${CHAT_API_URL}/messages`,
         {
           method: 'POST',
-          authToken,
           body: { body },
         },
       )
@@ -155,60 +138,51 @@ export const api = {
     },
   },
   admin: {
-    async getUsers(view: 'active' | 'banned', authToken?: string | null) {
-      return requestJson<AdminUsersPayload>(
-        `${CHAT_API_URL}/admin/users/${view}`,
-        { authToken },
-      )
+    async getUsers(view: 'active' | 'banned') {
+      return requestJson<AdminUsersPayload>(`${CHAT_API_URL}/admin/users/${view}`)
     },
-    async clear(authToken?: string | null) {
+    async clear() {
       return requestJson<{ ok: boolean }>(`${CHAT_API_URL}/admin/clear`, {
         method: 'POST',
-        authToken,
       })
     },
-    async deleteMessage(messageId: number, authToken?: string | null) {
+    async deleteMessage(messageId: number) {
       return requestJson<{ ok: boolean }>(
         `${CHAT_API_URL}/admin/messages/${messageId}/delete`,
         {
           method: 'POST',
-          authToken,
         },
       )
     },
-    async warnUser(messageId: number, authToken?: string | null) {
+    async warnUser(messageId: number) {
       return requestJson<{ ok: boolean; nickname?: string }>(
         `${CHAT_API_URL}/admin/messages/${messageId}/warn`,
         {
           method: 'POST',
-          authToken,
         },
       )
     },
-    async banUser(nickname: string, authToken?: string | null) {
+    async banUser(nickname: string) {
       return requestJson<{ ok: boolean }>(
         `${CHAT_API_URL}/admin/users/${encodeURIComponent(nickname)}/ban`,
         {
           method: 'POST',
-          authToken,
         },
       )
     },
-    async unbanUser(nickname: string, authToken?: string | null) {
+    async unbanUser(nickname: string) {
       return requestJson<{ ok: boolean }>(
         `${CHAT_API_URL}/admin/users/${encodeURIComponent(nickname)}/unban`,
         {
           method: 'POST',
-          authToken,
         },
       )
     },
-    async deleteUser(nickname: string, authToken?: string | null) {
+    async deleteUser(nickname: string) {
       return requestJson<{ ok: boolean }>(
         `${CHAT_API_URL}/admin/users/${encodeURIComponent(nickname)}`,
         {
           method: 'DELETE',
-          authToken,
         },
       )
     },

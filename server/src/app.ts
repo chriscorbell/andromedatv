@@ -18,6 +18,7 @@ import {
 import { normalizeScheduleXml, SchedulePayload } from "./lib/schedule";
 
 const STREAM_AUTH_COOKIE_NAME = "andromeda_stream";
+const STREAM_AUTH_COOKIE_PATH = "/api";
 const AUTH_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const RATE_LIMIT_MAX = 5;
 const RATE_WINDOW_MS = 10_000;
@@ -79,8 +80,11 @@ export type CreateAppOptions = {
     db: Database;
     ersatzBaseUrl: URL;
     jwtSecret: string;
+    publicAppOrigin?: string;
     staticDir?: string;
+    statusApiMode?: "public" | "admin" | "disabled";
     serveStatic?: boolean;
+    trustProxy?: boolean | number | string;
     logger?: Pick<Console, "info" | "warn" | "error">;
     loadSchedulePayload?: ScheduleLoader;
 };
@@ -110,10 +114,8 @@ function joinUrlPaths(basePath: string, suffixPath: string): string {
 }
 
 function getRequestOrigin(req: Request): string {
-    const protoHeader = req.header("x-forwarded-proto") || req.protocol;
-    const hostHeader = req.header("x-forwarded-host") || req.header("host") || "";
-    const proto = protoHeader.split(",")[0]?.trim() || "http";
-    const host = hostHeader.split(",")[0]?.trim();
+    const proto = req.protocol;
+    const host = (req.header("host") || "").split(",")[0]?.trim();
     if (!host) {
         return "";
     }
@@ -189,9 +191,12 @@ export function createApp(options: CreateAppOptions) {
         db,
         ersatzBaseUrl,
         jwtSecret,
+        publicAppOrigin,
         logger = console,
         serveStatic = true,
+        statusApiMode = "admin",
         staticDir,
+        trustProxy,
     } = options;
 
     const publicStreamClients = new Set<PublicStreamClient>();
@@ -208,6 +213,9 @@ export function createApp(options: CreateAppOptions) {
     const app = express();
     const apiChatRouter = express.Router();
     const startedAt = new Date();
+    if (trustProxy !== undefined) {
+        app.set("trust proxy", trustProxy);
+    }
     const diagnostics = {
         schedule: {
             lastSuccessAt: null as string | null,
@@ -342,9 +350,8 @@ export function createApp(options: CreateAppOptions) {
     }
 
     function isSecureRequest(req: Request): boolean {
-        const forwardedProto = req.header("x-forwarded-proto");
-        if (forwardedProto) {
-            return forwardedProto.split(",")[0]?.trim() === "https";
+        if (publicAppOrigin) {
+            return publicAppOrigin.startsWith("https://");
         }
 
         return req.secure;
@@ -355,7 +362,7 @@ export function createApp(options: CreateAppOptions) {
             httpOnly: true,
             sameSite: "lax",
             secure: isSecureRequest(req),
-            path: "/api/chat",
+            path: STREAM_AUTH_COOKIE_PATH,
             maxAge: AUTH_TOKEN_TTL_MS,
         });
     }
@@ -365,9 +372,75 @@ export function createApp(options: CreateAppOptions) {
             httpOnly: true,
             sameSite: "lax",
             secure: isSecureRequest(req),
-            path: "/api/chat",
+            path: STREAM_AUTH_COOKIE_PATH,
         });
     }
+
+    function buildStatusPayload() {
+        pruneExpiredRateLimits(Date.now());
+
+        const scheduleState =
+            diagnostics.schedule.lastSuccessAt
+                ? diagnostics.schedule.lastFailureAt &&
+                    diagnostics.schedule.lastFailureAt > diagnostics.schedule.lastSuccessAt
+                    ? "degraded"
+                    : "healthy"
+                : diagnostics.schedule.lastFailureAt
+                    ? "offline"
+                    : "starting";
+
+        return {
+            server: {
+                startedAt: startedAt.toISOString(),
+                uptimeMs: Date.now() - startedAt.getTime(),
+                nodeVersion: process.version,
+                heartbeatActive: Boolean(heartbeatTimer),
+                publicChatClients: publicStreamClients.size,
+                privateChatClients: privateStreamClients.size,
+                rateLimitedUsers: rateLimits.size,
+            },
+            schedule: {
+                state: scheduleState,
+                cacheExpiresAt: scheduleCache
+                    ? new Date(scheduleCache.expiresAt).toISOString()
+                    : null,
+                itemCount: diagnostics.schedule.itemCount,
+                lastDurationMs: diagnostics.schedule.lastDurationMs,
+                lastFailureAt: diagnostics.schedule.lastFailureAt,
+                lastFailureMessage: diagnostics.schedule.lastFailureMessage,
+                lastFetchedAt: diagnostics.schedule.lastFetchedAt,
+                lastRefreshAfterMs: diagnostics.schedule.lastRefreshAfterMs,
+                lastSuccessAt: diagnostics.schedule.lastSuccessAt,
+            },
+            chat: {
+                publicClients: publicStreamClients.size,
+                privateClients: privateStreamClients.size,
+                lastAdminActionAt: diagnostics.chat.lastAdminActionAt,
+                lastAdminActionType: diagnostics.chat.lastAdminActionType,
+                lastAdminTarget: diagnostics.chat.lastAdminTarget,
+                lastAuthFailureAt: diagnostics.chat.lastAuthFailureAt,
+                lastAuthFailureReason: diagnostics.chat.lastAuthFailureReason,
+                lastMessageAt: diagnostics.chat.lastMessageAt,
+                lastMessageNickname: diagnostics.chat.lastMessageNickname,
+                lastPrivateConnectAt: diagnostics.chat.lastPrivateConnectAt,
+                lastPrivateDisconnectAt: diagnostics.chat.lastPrivateDisconnectAt,
+                lastPublicConnectAt: diagnostics.chat.lastPublicConnectAt,
+                lastPublicDisconnectAt: diagnostics.chat.lastPublicDisconnectAt,
+            },
+            iptv: {
+                lastPlaylistRewriteAt: diagnostics.iptv.lastPlaylistRewriteAt,
+                lastPlaylistRewritePath: diagnostics.iptv.lastPlaylistRewritePath,
+                lastProxyError: diagnostics.iptv.lastProxyError,
+                lastProxyErrorAt: diagnostics.iptv.lastProxyErrorAt,
+                lastProxyRequestAt: diagnostics.iptv.lastProxyRequestAt,
+                lastProxyRequestPath: diagnostics.iptv.lastProxyRequestPath,
+            },
+        };
+    }
+
+    const handleStatusRequest = (_req: Request, res: Response) => {
+        res.json(buildStatusPayload());
+    };
 
     function broadcastChatEvent(event: string, data: unknown) {
         for (const client of publicStreamClients) {
@@ -555,73 +628,19 @@ export function createApp(options: CreateAppOptions) {
         return next();
     };
 
-    app.set("trust proxy", true);
-
     app.get("/health", (_req: Request, res: Response) => {
         res.json({ ok: true });
     });
 
-    app.get("/api/status", (_req: Request, res: Response) => {
-        pruneExpiredRateLimits(Date.now());
-
-        const scheduleState =
-            diagnostics.schedule.lastSuccessAt
-                ? diagnostics.schedule.lastFailureAt &&
-                    diagnostics.schedule.lastFailureAt > diagnostics.schedule.lastSuccessAt
-                    ? "degraded"
-                    : "healthy"
-                : diagnostics.schedule.lastFailureAt
-                    ? "offline"
-                    : "starting";
-
-        res.json({
-            server: {
-                startedAt: startedAt.toISOString(),
-                uptimeMs: Date.now() - startedAt.getTime(),
-                nodeVersion: process.version,
-                heartbeatActive: Boolean(heartbeatTimer),
-                publicChatClients: publicStreamClients.size,
-                privateChatClients: privateStreamClients.size,
-                rateLimitedUsers: rateLimits.size,
-            },
-            schedule: {
-                state: scheduleState,
-                cacheExpiresAt: scheduleCache
-                    ? new Date(scheduleCache.expiresAt).toISOString()
-                    : null,
-                itemCount: diagnostics.schedule.itemCount,
-                lastDurationMs: diagnostics.schedule.lastDurationMs,
-                lastFailureAt: diagnostics.schedule.lastFailureAt,
-                lastFailureMessage: diagnostics.schedule.lastFailureMessage,
-                lastFetchedAt: diagnostics.schedule.lastFetchedAt,
-                lastRefreshAfterMs: diagnostics.schedule.lastRefreshAfterMs,
-                lastSuccessAt: diagnostics.schedule.lastSuccessAt,
-            },
-            chat: {
-                publicClients: publicStreamClients.size,
-                privateClients: privateStreamClients.size,
-                lastAdminActionAt: diagnostics.chat.lastAdminActionAt,
-                lastAdminActionType: diagnostics.chat.lastAdminActionType,
-                lastAdminTarget: diagnostics.chat.lastAdminTarget,
-                lastAuthFailureAt: diagnostics.chat.lastAuthFailureAt,
-                lastAuthFailureReason: diagnostics.chat.lastAuthFailureReason,
-                lastMessageAt: diagnostics.chat.lastMessageAt,
-                lastMessageNickname: diagnostics.chat.lastMessageNickname,
-                lastPrivateConnectAt: diagnostics.chat.lastPrivateConnectAt,
-                lastPrivateDisconnectAt: diagnostics.chat.lastPrivateDisconnectAt,
-                lastPublicConnectAt: diagnostics.chat.lastPublicConnectAt,
-                lastPublicDisconnectAt: diagnostics.chat.lastPublicDisconnectAt,
-            },
-            iptv: {
-                lastPlaylistRewriteAt: diagnostics.iptv.lastPlaylistRewriteAt,
-                lastPlaylistRewritePath: diagnostics.iptv.lastPlaylistRewritePath,
-                lastProxyError: diagnostics.iptv.lastProxyError,
-                lastProxyErrorAt: diagnostics.iptv.lastProxyErrorAt,
-                lastProxyRequestAt: diagnostics.iptv.lastProxyRequestAt,
-                lastProxyRequestPath: diagnostics.iptv.lastProxyRequestPath,
-            },
+    if (statusApiMode === "public") {
+        app.get("/api/status", handleStatusRequest);
+    } else if (statusApiMode === "admin") {
+        app.get("/api/status", requireAuth, requireAdmin, handleStatusRequest);
+    } else {
+        app.get("/api/status", (_req: Request, res: Response) => {
+            res.status(404).json({ error: "Not found" });
         });
-    });
+    }
 
     app.use(
         "/iptv",
@@ -676,7 +695,7 @@ export function createApp(options: CreateAppOptions) {
                             const original = await streamToBuffer(proxyRes);
                             const rewritten = rewritePlaylistBody(
                                 original.toString("utf8"),
-                                getRequestOrigin(req)
+                                publicAppOrigin || getRequestOrigin(req)
                             );
                             diagnostics.iptv.lastPlaylistRewriteAt = new Date().toISOString();
                             diagnostics.iptv.lastPlaylistRewritePath = suffixPath;
@@ -801,7 +820,7 @@ export function createApp(options: CreateAppOptions) {
 
         const token = issueAuthToken(nickname);
         setStreamAuthCookie(req, res, token);
-        return res.status(201).json({ nickname, token, isAdmin: false });
+        return res.status(201).json({ nickname, isAdmin: false });
     });
 
     apiChatRouter.post("/auth/login", async (req: Request, res: Response) => {
@@ -854,7 +873,7 @@ export function createApp(options: CreateAppOptions) {
         const isAdmin = user.is_admin === 1;
         const token = issueAuthToken(canonicalNickname);
         setStreamAuthCookie(req, res, token);
-        return res.json({ nickname: canonicalNickname, token, isAdmin });
+        return res.json({ nickname: canonicalNickname, isAdmin });
     });
 
     apiChatRouter.post("/auth/logout", (req: Request, res: Response) => {
