@@ -5,7 +5,7 @@ This is a single-page livestream webapp with schedule + chat, deployable as a si
 ## Tooling
 
 - Bun is the package manager for both the root app and the `server/` package.
-- Node 20 remains the production runtime for the backend container.
+- Node 24 remains the production runtime for the backend container.
 
 ## Frontend
 

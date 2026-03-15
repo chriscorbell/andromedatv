@@ -26,7 +26,7 @@ COPY server/ ./
 RUN bun run build
 RUN rm -rf node_modules && bun install --frozen-lockfile --production
 
-FROM node:20-slim AS runtime
+FROM node:24-slim AS runtime
 WORKDIR /app
 
 ENV NODE_ENV=production
