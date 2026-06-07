@@ -20,6 +20,11 @@ import {
     InternalScheduleOptions,
     loadInternalSchedulePayload,
 } from "./lib/internal-schedule";
+import {
+    createInternalPlayout,
+    InternalPlayoutDiagnostics,
+    InternalPlayoutOptions,
+} from "./lib/internal-playout";
 import { normalizeScheduleXml, SchedulePayload } from "./lib/schedule";
 
 const STREAM_AUTH_COOKIE_NAME = "andromeda_stream";
@@ -93,6 +98,7 @@ export type CreateAppOptions = {
     logger?: Pick<Console, "info" | "warn" | "error">;
     loadSchedulePayload?: ScheduleLoader;
     internalSchedule?: Omit<InternalScheduleOptions, "db">;
+    internalPlayout?: Omit<InternalPlayoutOptions, "db" | "logger">;
 };
 
 type LogLevel = "info" | "warn" | "error";
@@ -208,6 +214,9 @@ export function createApp(options: CreateAppOptions) {
     const internalScheduleOptions = options.internalSchedule
         ? { ...options.internalSchedule, db }
         : null;
+    const internalPlayout = options.internalPlayout
+        ? createInternalPlayout({ ...options.internalPlayout, db, logger })
+        : null;
 
     const publicStreamClients = new Set<PublicStreamClient>();
     const privateStreamClients = new Set<PrivateStreamClient>();
@@ -268,6 +277,17 @@ export function createApp(options: CreateAppOptions) {
             seriesRoot: internalScheduleOptions?.seriesRoot || null,
             scannerDiagnostics: [],
         } as InternalScheduleDiagnostics,
+        internalPlayout: (internalPlayout?.getDiagnostics() || {
+            configured: false,
+            activeAssetPath: null,
+            activeAssetRole: null,
+            activeAssetTitle: null,
+            ffmpegPid: null,
+            lastFailureAt: null,
+            lastFailureMessage: null,
+            lastStartAt: null,
+            outputRoot: null,
+        }) as InternalPlayoutDiagnostics,
     };
 
     function logEvent(level: LogLevel, event: string, details: Record<string, unknown> = {}) {
@@ -457,6 +477,7 @@ export function createApp(options: CreateAppOptions) {
                 lastProxyRequestPath: diagnostics.iptv.lastProxyRequestPath,
             },
             internalSchedule: diagnostics.internalSchedule,
+            internalPlayout: diagnostics.internalPlayout,
         };
     }
 
@@ -679,6 +700,37 @@ export function createApp(options: CreateAppOptions) {
         async (req: Request, res: Response) => {
             const requestUrl = new URL(req.originalUrl, "http://localhost");
             const suffixPath = requestUrl.pathname.replace(/^\/iptv(?=\/|$)/, "") || "/";
+
+            if (internalPlayout) {
+                if (req.method !== "GET" && req.method !== "HEAD") {
+                    return res.status(405).json({ error: "Method not allowed" });
+                }
+
+                try {
+                    await internalPlayout.ensureLiveHls();
+                    diagnostics.internalPlayout = internalPlayout.getDiagnostics();
+                    const filePath = internalPlayout.resolveHlsFile(suffixPath);
+                    if (!filePath) {
+                        return res.status(404).json({ error: "Not found" });
+                    }
+
+                    setNoCacheHeaders(res);
+                    if (filePath.endsWith(".m3u8")) {
+                        res.type("application/vnd.apple.mpegurl");
+                    } else if (filePath.endsWith(".ts")) {
+                        res.type("video/mp2t");
+                    }
+                    return res.sendFile(filePath);
+                } catch (error) {
+                    diagnostics.internalPlayout = internalPlayout.getDiagnostics();
+                    logEvent("warn", "iptv.internal_playout.failed", {
+                        path: suffixPath,
+                        error: error instanceof Error ? error.message : String(error),
+                    });
+                    return res.status(502).json({ error: "internal playout unavailable" });
+                }
+            }
+
             diagnostics.iptv.lastProxyRequestAt = new Date().toISOString();
             diagnostics.iptv.lastProxyRequestPath = suffixPath;
 

@@ -81,6 +81,15 @@ type EpisodeCursorRow = {
     episode_index: number;
 };
 
+export type InternalMediaAsset = {
+    id: number;
+    role: MediaRole;
+    filePath: string;
+    seriesTitle: string | null;
+    title: string;
+    durationSeconds: number;
+};
+
 type FfprobeJson = {
     format?: {
         duration?: string;
@@ -313,13 +322,6 @@ async function ensureChannelState(db: Database, random: () => number, now: Date)
         return existingState;
     }
 
-    const seriesRows = await db.all<Array<{ series_title: string }>>(
-        "SELECT DISTINCT series_title FROM media_assets " +
-        "WHERE role = 'episode' AND series_title IS NOT NULL AND duration_seconds IS NOT NULL " +
-        "ORDER BY series_title COLLATE NOCASE"
-    );
-    const seriesTitles = seriesRows.map((row) => row.series_title);
-    const rotation = shuffleSeries(seriesTitles, random);
     const timestamp = now.toISOString();
 
     await db.run(
@@ -380,6 +382,88 @@ async function loadScheduleAssets(db: Database) {
         "ORDER BY sort_key COLLATE NOCASE, title COLLATE NOCASE"
     );
     return { episodes, bumps };
+}
+
+function toInternalMediaAsset(row: MediaAssetRow): InternalMediaAsset | null {
+    if (!row.duration_seconds || row.duration_seconds <= 0) {
+        return null;
+    }
+
+    return {
+        id: row.id,
+        durationSeconds: row.duration_seconds,
+        filePath: row.file_path,
+        role: row.role,
+        seriesTitle: row.series_title,
+        title: row.title,
+    };
+}
+
+function buildDiagnostics(
+    options: InternalScheduleOptions,
+    scan: Awaited<ReturnType<typeof scanInternalLibrary>>,
+    now: Date
+): InternalScheduleDiagnostics {
+    return {
+        configured: true,
+        bumpsRoot: options.bumpsRoot,
+        lastError: null,
+        lastScanAt: now.toISOString(),
+        scannedBumpAssets: scan.assets.filter((asset) => asset.role === "bump").length,
+        scannedEpisodeAssets: scan.assets.filter((asset) => asset.role === "episode").length,
+        seriesAllowlist: options.seriesAllowlist || [],
+        seriesRoot: options.seriesRoot,
+        scannerDiagnostics: scan.diagnostics,
+    };
+}
+
+export async function loadCurrentInternalMediaAsset(
+    options: InternalScheduleOptions
+): Promise<{ mediaAsset: InternalMediaAsset; diagnostics: InternalScheduleDiagnostics }> {
+    const now = options.now ? options.now() : new Date();
+    const random = options.random || Math.random;
+    const scan = await scanInternalLibrary(options);
+    await persistMediaAssets(options.db, scan.assets, now);
+    const state = await ensureChannelState(options.db, random, now);
+    const { episodes, bumps } = await loadScheduleAssets(options.db);
+    const rotationRow = await options.db.get<{ series_title: string }>(
+        "SELECT series_title FROM series_rotation WHERE channel_state_id = 1 AND position = ?",
+        state.current_rotation_index
+    );
+
+    if (rotationRow) {
+        const seriesEpisodes = episodes.filter(
+            (episode) => episode.series_title === rotationRow.series_title
+        );
+        const cursorRow = await options.db.get<{ episode_index: number }>(
+            "SELECT episode_index FROM episode_cursors WHERE channel_state_id = 1 AND series_title = ?",
+            rotationRow.series_title
+        );
+        if (seriesEpisodes.length > 0) {
+            const cursor = cursorRow?.episode_index || 0;
+            const mediaAsset = toInternalMediaAsset(
+                seriesEpisodes[cursor % seriesEpisodes.length]
+            );
+            if (mediaAsset) {
+                return {
+                    diagnostics: buildDiagnostics(options, scan, now),
+                    mediaAsset,
+                };
+            }
+        }
+    }
+
+    if (bumps.length > 0) {
+        const mediaAsset = toInternalMediaAsset(bumps[state.bump_cursor % bumps.length]);
+        if (mediaAsset) {
+            return {
+                diagnostics: buildDiagnostics(options, scan, now),
+                mediaAsset,
+            };
+        }
+    }
+
+    throw new Error("No current internal media asset is available");
 }
 
 export async function loadInternalSchedulePayload(
@@ -453,17 +537,7 @@ export async function loadInternalSchedulePayload(
     }
 
     return {
-        diagnostics: {
-            configured: true,
-            bumpsRoot: options.bumpsRoot,
-            lastError: null,
-            lastScanAt: now.toISOString(),
-            scannedBumpAssets: scan.assets.filter((asset) => asset.role === "bump").length,
-            scannedEpisodeAssets: scan.assets.filter((asset) => asset.role === "episode").length,
-            seriesAllowlist: options.seriesAllowlist || [],
-            seriesRoot: options.seriesRoot,
-            scannerDiagnostics: scan.diagnostics,
-        },
+        diagnostics: buildDiagnostics(options, scan, now),
         payload: {
             fetchedAt: now.toISOString(),
             refreshAfterMs: computeScheduleRefreshDelay(now, {

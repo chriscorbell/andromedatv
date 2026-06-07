@@ -38,6 +38,10 @@ COPY --from=server-build --chown=node:node /app/server/dist /app/server/dist
 COPY --from=server-build --chown=node:node /app/server/package.json /app/server/package.json
 COPY --from=server-build --chown=node:node /app/server/node_modules /app/server/node_modules
 
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ffmpeg \
+  && rm -rf /var/lib/apt/lists/*
+
 RUN mkdir -p /data && chown -R node:node /data
 
 USER node

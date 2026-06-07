@@ -19,6 +19,9 @@ const ANDROMEDA_SERIES_ALLOWLIST = process.env.ANDROMEDA_SERIES_ALLOWLIST || "";
 const DB_PATH =
     process.env.DB_PATH ||
     path.resolve(__dirname, "..", "data", "andromeda.db");
+const INTERNAL_HLS_OUTPUT_ROOT =
+    process.env.INTERNAL_HLS_OUTPUT_ROOT ||
+    path.resolve(path.dirname(DB_PATH), "hls");
 const JWT_SECRET_PATH =
     process.env.JWT_SECRET_PATH ||
     path.resolve(path.dirname(DB_PATH), "jwt-secret");
@@ -108,19 +111,23 @@ async function main() {
     const statusApiMode = parseStatusApiMode(STATUS_API_MODE);
     const trustProxy = parseTrustProxy(TRUST_PROXY);
     const ersatzBaseUrl = new URL(ERSATZTV_BASE_URL || "http://127.0.0.1:8409");
+    const internalScheduleOptions = playoutMode === "internal"
+        ? {
+            bumpsRoot: ANDROMEDA_BUMPS_ROOT,
+            seriesAllowlist: parseSeriesAllowlist(ANDROMEDA_SERIES_ALLOWLIST),
+            seriesRoot: ANDROMEDA_SERIES_ROOT,
+        }
+        : undefined;
 
     const app = createApp({
         corsOrigin: CORS_ORIGIN,
         db,
         ersatzBaseUrl,
         jwtSecret,
-        internalSchedule: playoutMode === "internal"
-            ? {
-                bumpsRoot: ANDROMEDA_BUMPS_ROOT,
-                seriesAllowlist: parseSeriesAllowlist(ANDROMEDA_SERIES_ALLOWLIST),
-                seriesRoot: ANDROMEDA_SERIES_ROOT,
-            }
+        internalPlayout: internalScheduleOptions
+            ? { ...internalScheduleOptions, hlsOutputRoot: INTERNAL_HLS_OUTPUT_ROOT }
             : undefined,
+        internalSchedule: internalScheduleOptions,
         publicAppOrigin,
         statusApiMode,
         staticDir: STATIC_DIR,

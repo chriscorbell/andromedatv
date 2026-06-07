@@ -20,7 +20,7 @@ The app is served from one origin and one process:
 - `/` -> SPA frontend
 - `/api/chat/*` -> chat API + SSE
 - `/api/schedule` -> normalized schedule API
-- `/iptv/*` -> reverse proxy to external ErsatzTV
+- `/iptv/*` -> HLS/IPTV compatibility route backed by ErsatzTV or internal playout mode
 
 ### Local frontend scripts
 
@@ -75,6 +75,8 @@ ANDROMEDA_BUMPS_ROOT=/nas/media/andromeda/bumps # Used when PLAYOUT_MODE=interna
 
 ANDROMEDA_SERIES_ALLOWLIST= # Optional comma-separated Series Allowlist for internal playout
 
+INTERNAL_HLS_OUTPUT_ROOT=/data/hls # Optional HLS playlist/segment output root for internal playout
+
 INITIAL_ADMIN_NICKNAME=andromedatv # Required - bootstraps the first admin if none exists
 
 INITIAL_ADMIN_PASSWORD=replace_me # Required - must be set together with INITIAL_ADMIN_NICKNAME
@@ -95,7 +97,7 @@ DB_PATH=/data/andromeda.db # Optional - default database path
 
 The admin bootstrap only runs when there are no admin users in the database. After the first admin exists, those variables are ignored unless you reset the chat DB.
 
-Set `PLAYOUT_MODE=internal` to serve `/api/schedule` from the internal schedule preview. In internal mode, AndromedaTV scans `ANDROMEDA_SERIES_ROOT` for allowlisted Episode Assets, scans `ANDROMEDA_BUMPS_ROOT` for filename-sorted Bump Assets, persists discovered media facts and first Channel State in SQLite, and reports scanner diagnostics through `/api/status`. `ERSATZTV_BASE_URL` is still required for the legacy ErsatzTV proxy mode.
+Set `PLAYOUT_MODE=internal` to serve `/api/schedule` from the internal schedule preview and `/iptv/session/1/hls.m3u8` from AndromedaTV-owned Live HLS output. In internal mode, AndromedaTV scans `ANDROMEDA_SERIES_ROOT` for allowlisted Episode Assets, scans `ANDROMEDA_BUMPS_ROOT` for filename-sorted Bump Assets, persists discovered media facts and first Channel State in SQLite, starts CPU ffmpeg HLS output for the current Media Asset under `INTERNAL_HLS_OUTPUT_ROOT`, and reports scanner/playout diagnostics through `/api/status`. `ERSATZTV_BASE_URL` is still required for the legacy ErsatzTV proxy mode.
 
 If `JWT_SECRET` is omitted, the app writes a generated secret to `/data/jwt-secret` on first boot and reuses it on later starts. Keep the `/data` volume persistent so chat sessions remain valid across restarts.
 
@@ -138,4 +140,4 @@ App data is persisted via host bind mount:
 - Diagnostics: `/api/status` (admin-authenticated by default; configure with `STATUS_API_MODE`)
 - Schedule API: `/api/schedule`
 - XMLTV via proxy: `/iptv/xmltv.xml`
-- HLS via proxy: `/iptv/session/1/hls.m3u8`
+- HLS compatibility route: `/iptv/session/1/hls.m3u8`
