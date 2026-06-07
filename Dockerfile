@@ -39,7 +39,11 @@ COPY --from=server-build --chown=node:node /app/server/package.json /app/server/
 COPY --from=server-build --chown=node:node /app/server/node_modules /app/server/node_modules
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ffmpeg \
+  && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    intel-media-va-driver \
+    libva-drm2 \
+    vainfo \
   && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /data && chown -R node:node /data

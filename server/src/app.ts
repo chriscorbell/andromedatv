@@ -283,6 +283,9 @@ export function createApp(options: CreateAppOptions) {
             activeAssetRole: null,
             activeAssetTitle: null,
             ffmpegPid: null,
+            hardwareAccelerationActive: false,
+            hardwareAccelerationAvailable: false,
+            hardwareDevicePath: null,
             lastFailureAt: null,
             lastFailureMessage: null,
             lastStartAt: null,
@@ -290,6 +293,7 @@ export function createApp(options: CreateAppOptions) {
             resumeMode: null,
             resumeOffsetSeconds: null,
             resumeReason: null,
+            transcodeAccelerationMode: null,
         }) as InternalPlayoutDiagnostics,
     };
 

@@ -77,6 +77,10 @@ ANDROMEDA_SERIES_ALLOWLIST= # Optional comma-separated Series Allowlist for inte
 
 INTERNAL_HLS_OUTPUT_ROOT=/data/hls # Optional HLS playlist/segment output root for internal playout
 
+TRANSCODE_ACCEL=disabled # Optional - "disabled" (default), "preferred", or "required"
+
+TRANSCODE_ACCEL_DEVICE=/dev/dri/renderD128 # Intel render device used when TRANSCODE_ACCEL is preferred or required
+
 INITIAL_ADMIN_NICKNAME=andromedatv # Required - bootstraps the first admin if none exists
 
 INITIAL_ADMIN_PASSWORD=replace_me # Required - must be set together with INITIAL_ADMIN_NICKNAME
@@ -97,7 +101,27 @@ DB_PATH=/data/andromeda.db # Optional - default database path
 
 The admin bootstrap only runs when there are no admin users in the database. After the first admin exists, those variables are ignored unless you reset the chat DB.
 
-Set `PLAYOUT_MODE=internal` to serve `/api/schedule` from the internal schedule preview and `/iptv/session/1/hls.m3u8` from AndromedaTV-owned Live HLS output. In internal mode, AndromedaTV scans `ANDROMEDA_SERIES_ROOT` for allowlisted Episode Assets, scans `ANDROMEDA_BUMPS_ROOT` for filename-sorted Bump Assets, persists discovered media facts and first Channel State in SQLite, starts CPU ffmpeg HLS output for the current Media Asset under `INTERNAL_HLS_OUTPUT_ROOT`, and reports scanner/playout diagnostics through `/api/status`. `ERSATZTV_BASE_URL` is still required for the legacy ErsatzTV proxy mode.
+Set `PLAYOUT_MODE=internal` to serve `/api/schedule` from the internal schedule preview and `/iptv/session/1/hls.m3u8` from AndromedaTV-owned Live HLS output. In internal mode, AndromedaTV scans `ANDROMEDA_SERIES_ROOT` for allowlisted Episode Assets, scans `ANDROMEDA_BUMPS_ROOT` for filename-sorted Bump Assets, persists discovered media facts and first Channel State in SQLite, starts ffmpeg HLS output for the current Media Asset under `INTERNAL_HLS_OUTPUT_ROOT`, and reports scanner/playout diagnostics through `/api/status`. `ERSATZTV_BASE_URL` is still required for the legacy ErsatzTV proxy mode.
+
+`TRANSCODE_ACCEL` controls the Live HLS transcode path:
+
+- `disabled`: CPU-only `libx264` output. This is the default for development and automated tests.
+- `preferred`: try Intel VAAPI hardware encoding first when `TRANSCODE_ACCEL_DEVICE` is available, then fall back to CPU if ffmpeg cannot produce the HLS playlist.
+- `required`: require Intel VAAPI hardware encoding and fail startup in internal playout mode when `TRANSCODE_ACCEL_DEVICE` is unavailable. This is the intended production setting once the host is validated.
+
+The container includes ffmpeg, VAAPI runtime libraries, `intel-media-va-driver`, and `vainfo`. On an Intel Arc A310 host, mount the render device and give the container user access to the render/video groups:
+
+```yaml
+services:
+  andromedatv:
+    devices:
+      - /dev/dri:/dev/dri
+    group_add:
+      - "render"
+      - "video"
+```
+
+Host validation is still required for Intel Arc A310 production use. Before setting `TRANSCODE_ACCEL=required`, confirm the host exposes `/dev/dri/renderD128`, the container user can read/write it, and `vainfo --display drm --device /dev/dri/renderD128` reports the Intel media driver. `/api/status` reports `internalPlayout.transcodeAccelerationMode`, `hardwareAccelerationAvailable`, `hardwareAccelerationActive`, and `hardwareDevicePath`.
 
 If `JWT_SECRET` is omitted, the app writes a generated secret to `/data/jwt-secret` on first boot and reuses it on later starts. Keep the `/data` volume persistent so chat sessions remain valid across restarts.
 

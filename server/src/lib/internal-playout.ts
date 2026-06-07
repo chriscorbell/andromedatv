@@ -9,6 +9,10 @@ import {
     MediaProbe,
     loadCurrentInternalMediaAsset,
 } from "./internal-schedule";
+import {
+    buildLiveHlsTranscodeAttempts,
+    TranscodeAccelerationStatus,
+} from "./transcode-acceleration";
 
 export type InternalPlayoutResumeMode = "boundary" | "wall-clock";
 
@@ -25,6 +29,10 @@ export type InternalPlayoutDiagnostics = {
     lastFailureAt: string | null;
     lastFailureMessage: string | null;
     ffmpegPid: number | null;
+    hardwareAccelerationActive: boolean;
+    hardwareAccelerationAvailable: boolean;
+    hardwareDevicePath: string | null;
+    transcodeAccelerationMode: TranscodeAccelerationStatus["mode"] | null;
 };
 
 export type InternalLiveHlsTranscodeRequest = {
@@ -33,11 +41,13 @@ export type InternalLiveHlsTranscodeRequest = {
     playlistPath: string;
     segmentPattern: string;
     startOffsetSeconds: number;
+    transcodeAcceleration: TranscodeAccelerationStatus;
 };
 
 export type InternalLiveHlsTranscodeResult = {
     playlistPath: string;
     process?: ChildProcess;
+    usesHardwareAcceleration?: boolean;
 };
 
 export type InternalLiveHlsTranscoder = (
@@ -54,6 +64,7 @@ export type InternalPlayoutOptions = {
     random?: () => number;
     probeMediaAsset?: MediaProbe;
     canSeekMediaAsset?: (mediaAsset: InternalMediaAsset) => boolean;
+    transcodeAcceleration?: TranscodeAccelerationStatus;
     transcodeLiveHls?: InternalLiveHlsTranscoder;
     logger?: Pick<Console, "info" | "warn" | "error">;
 };
@@ -81,6 +92,11 @@ type ResumeDecision = {
 };
 
 const PLAYLIST_FILE_NAME = "hls.m3u8";
+const DEFAULT_TRANSCODE_ACCELERATION: TranscodeAccelerationStatus = {
+    devicePath: "/dev/dri/renderD128",
+    hardwareAvailable: false,
+    mode: "disabled",
+};
 
 function scheduleOptions(options: InternalPlayoutOptions): InternalScheduleOptions {
     return {
@@ -113,12 +129,6 @@ function normalizeResumeOffset(seconds: number): number {
     }
 
     return Math.floor(seconds);
-}
-
-function formatFfmpegSeconds(seconds: number): string {
-    return Math.max(0, seconds)
-        .toFixed(3)
-        .replace(/\.?0+$/, "");
 }
 
 async function loadActivePlayoutHistory(db: Database): Promise<PlayoutHistoryRow | null> {
@@ -297,50 +307,49 @@ export async function transcodeMediaAssetToLiveHls({
     playlistPath,
     segmentPattern,
     startOffsetSeconds,
+    transcodeAcceleration,
 }: InternalLiveHlsTranscodeRequest): Promise<InternalLiveHlsTranscodeResult> {
-    await fs.rm(outputRoot, { recursive: true, force: true });
-    await fs.mkdir(outputRoot, { recursive: true });
-
-    const ffmpeg = spawn("ffmpeg", [
-        "-hide_banner",
-        "-loglevel",
-        "warning",
-        "-re",
-        ...(startOffsetSeconds > 0 ? ["-ss", formatFfmpegSeconds(startOffsetSeconds)] : []),
-        "-i",
-        mediaAsset.filePath,
-        "-map",
-        "0:v:0",
-        "-map",
-        "0:a:0?",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
-        "-tune",
-        "zerolatency",
-        "-c:a",
-        "aac",
-        "-f",
-        "hls",
-        "-hls_time",
-        "4",
-        "-hls_list_size",
-        "6",
-        "-hls_flags",
-        "delete_segments+independent_segments",
-        "-hls_segment_filename",
-        segmentPattern,
+    const attempts = buildLiveHlsTranscodeAttempts({
+        inputPath: mediaAsset.filePath,
         playlistPath,
-    ], {
-        stdio: ["ignore", "pipe", "pipe"],
+        segmentPattern,
+        startOffsetSeconds,
+        transcodeAcceleration,
     });
+    let lastError: unknown = null;
 
-    await waitForPlaylist(playlistPath, ffmpeg);
-    return { playlistPath, process: ffmpeg };
+    for (const [attemptIndex, attempt] of attempts.entries()) {
+        await fs.rm(outputRoot, { recursive: true, force: true });
+        await fs.mkdir(outputRoot, { recursive: true });
+
+        const ffmpeg = spawn("ffmpeg", attempt.args, {
+            stdio: ["ignore", "pipe", "pipe"],
+        });
+
+        try {
+            await waitForPlaylist(playlistPath, ffmpeg);
+            return {
+                playlistPath,
+                process: ffmpeg,
+                usesHardwareAcceleration: attempt.usesHardwareAcceleration,
+            };
+        } catch (error) {
+            lastError = error;
+            if (!ffmpeg.killed) {
+                ffmpeg.kill("SIGTERM");
+            }
+            if (attemptIndex === attempts.length - 1) {
+                break;
+            }
+        }
+    }
+
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
 export function createInternalPlayout(options: InternalPlayoutOptions) {
+    const transcodeAcceleration =
+        options.transcodeAcceleration || DEFAULT_TRANSCODE_ACCELERATION;
     let active: ActivePlayout | null = null;
     let diagnostics: InternalPlayoutDiagnostics = {
         configured: true,
@@ -348,6 +357,9 @@ export function createInternalPlayout(options: InternalPlayoutOptions) {
         activeAssetRole: null,
         activeAssetTitle: null,
         ffmpegPid: null,
+        hardwareAccelerationActive: false,
+        hardwareAccelerationAvailable: transcodeAcceleration.hardwareAvailable,
+        hardwareDevicePath: transcodeAcceleration.devicePath,
         lastFailureAt: null,
         lastFailureMessage: null,
         lastStartAt: null,
@@ -355,6 +367,7 @@ export function createInternalPlayout(options: InternalPlayoutOptions) {
         resumeMode: null,
         resumeOffsetSeconds: null,
         resumeReason: null,
+        transcodeAccelerationMode: transcodeAcceleration.mode,
     };
 
     async function ensureLiveHls() {
@@ -388,6 +401,7 @@ export function createInternalPlayout(options: InternalPlayoutOptions) {
                 playlistPath,
                 segmentPattern,
                 startOffsetSeconds: resume.offsetSeconds,
+                transcodeAcceleration,
             });
             const historyId = resume.historyId || await recordPlayoutStart(
                 options.db,
@@ -412,6 +426,7 @@ export function createInternalPlayout(options: InternalPlayoutOptions) {
                     diagnostics = {
                         ...diagnostics,
                         ffmpegPid: null,
+                        hardwareAccelerationActive: false,
                     };
                     void (async () => {
                         await markPlayoutHistoryCompleted(
@@ -439,6 +454,7 @@ export function createInternalPlayout(options: InternalPlayoutOptions) {
                 diagnostics = {
                     ...diagnostics,
                     ffmpegPid: null,
+                    hardwareAccelerationActive: false,
                     lastFailureAt: new Date().toISOString(),
                     lastFailureMessage: `ffmpeg exited (${signal || code})`,
                 };
@@ -449,6 +465,7 @@ export function createInternalPlayout(options: InternalPlayoutOptions) {
                 activeAssetRole: mediaAsset.role,
                 activeAssetTitle: mediaAsset.title,
                 ffmpegPid: result.process?.pid || null,
+                hardwareAccelerationActive: Boolean(result.usesHardwareAcceleration),
                 lastFailureAt: null,
                 lastFailureMessage: null,
                 lastStartAt: now.toISOString(),
@@ -464,6 +481,7 @@ export function createInternalPlayout(options: InternalPlayoutOptions) {
                 activeAssetRole: mediaAsset.role,
                 activeAssetTitle: mediaAsset.title,
                 ffmpegPid: null,
+                hardwareAccelerationActive: false,
                 lastFailureAt: new Date().toISOString(),
                 lastFailureMessage: error instanceof Error ? error.message : String(error),
             };

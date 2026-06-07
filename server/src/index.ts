@@ -3,6 +3,10 @@ import path from "path";
 import { createApp } from "./app";
 import { ensureInitialAdmin, loadOrCreateJwtSecret } from "./bootstrap";
 import { initDb } from "./db";
+import {
+    parseTranscodeAccelerationMode,
+    validateTranscodeAcceleration,
+} from "./lib/transcode-acceleration";
 
 const PORT = Number(process.env.PORT || 3001);
 const CORS_ORIGIN = process.env.CORS_ORIGIN || "*";
@@ -22,6 +26,9 @@ const DB_PATH =
 const INTERNAL_HLS_OUTPUT_ROOT =
     process.env.INTERNAL_HLS_OUTPUT_ROOT ||
     path.resolve(path.dirname(DB_PATH), "hls");
+const TRANSCODE_ACCEL = process.env.TRANSCODE_ACCEL || "";
+const TRANSCODE_ACCEL_DEVICE =
+    process.env.TRANSCODE_ACCEL_DEVICE || "/dev/dri/renderD128";
 const JWT_SECRET_PATH =
     process.env.JWT_SECRET_PATH ||
     path.resolve(path.dirname(DB_PATH), "jwt-secret");
@@ -111,6 +118,12 @@ async function main() {
     const statusApiMode = parseStatusApiMode(STATUS_API_MODE);
     const trustProxy = parseTrustProxy(TRUST_PROXY);
     const ersatzBaseUrl = new URL(ERSATZTV_BASE_URL || "http://127.0.0.1:8409");
+    const transcodeAcceleration = playoutMode === "internal"
+        ? await validateTranscodeAcceleration({
+            devicePath: TRANSCODE_ACCEL_DEVICE,
+            mode: parseTranscodeAccelerationMode(TRANSCODE_ACCEL),
+        })
+        : undefined;
     const internalScheduleOptions = playoutMode === "internal"
         ? {
             bumpsRoot: ANDROMEDA_BUMPS_ROOT,
@@ -125,7 +138,11 @@ async function main() {
         ersatzBaseUrl,
         jwtSecret,
         internalPlayout: internalScheduleOptions
-            ? { ...internalScheduleOptions, hlsOutputRoot: INTERNAL_HLS_OUTPUT_ROOT }
+            ? {
+                ...internalScheduleOptions,
+                hlsOutputRoot: INTERNAL_HLS_OUTPUT_ROOT,
+                transcodeAcceleration,
+            }
             : undefined,
         internalSchedule: internalScheduleOptions,
         publicAppOrigin,

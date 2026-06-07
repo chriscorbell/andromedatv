@@ -439,6 +439,75 @@ test("internal IPTV route serves generated live HLS output", async () => {
     }
 });
 
+test("internal playout status reports transcode acceleration mode and hardware use", async () => {
+    const context = await createTestContext();
+    const libraryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "andromeda-library-test-"));
+    const hlsOutputRoot = await fs.mkdtemp(path.join(os.tmpdir(), "andromeda-hls-test-"));
+
+    try {
+        const seriesRoot = path.join(libraryRoot, "series");
+        const bumpsRoot = path.join(libraryRoot, "bumps");
+        const episodePath = path.join(seriesRoot, "Allowed Series", "episode-01.mp4");
+        await fs.mkdir(path.dirname(episodePath), { recursive: true });
+        await fs.mkdir(bumpsRoot, { recursive: true });
+        await fs.writeFile(episodePath, "fixture");
+
+        const app = createApp({
+            corsOrigin: "*",
+            db: context.db,
+            ersatzBaseUrl: new URL("http://127.0.0.1:1"),
+            jwtSecret: "test-secret",
+            serveStatic: false,
+            statusApiMode: "public",
+            internalPlayout: {
+                bumpsRoot,
+                hlsOutputRoot,
+                seriesAllowlist: ["Allowed Series"],
+                seriesRoot,
+                transcodeAcceleration: {
+                    devicePath: "/dev/dri/renderD128",
+                    hardwareAvailable: true,
+                    mode: "preferred",
+                },
+                probeMediaAsset: async () => ({
+                    durationSeconds: 1800,
+                    videoCodec: "h264",
+                    audioCodec: "aac",
+                }),
+                random: () => 0,
+                now: () => new Date("2026-03-14T12:00:00.000Z"),
+                transcodeLiveHls: async ({ outputRoot }) => {
+                    await fs.mkdir(outputRoot, { recursive: true });
+                    const playlistPath = path.join(outputRoot, "hls.m3u8");
+                    await fs.writeFile(
+                        playlistPath,
+                        "#EXTM3U\n#EXT-X-TARGETDURATION:4\nsegment-00001.ts\n"
+                    );
+                    await fs.writeFile(path.join(outputRoot, "segment-00001.ts"), "segment-data");
+                    return { playlistPath, usesHardwareAcceleration: true };
+                },
+            },
+        });
+
+        await request(app)
+            .get("/iptv/session/1/hls.m3u8")
+            .expect(200);
+
+        const statusResponse = await request(app)
+            .get("/api/status")
+            .expect(200);
+
+        assert.equal(statusResponse.body.internalPlayout.transcodeAccelerationMode, "preferred");
+        assert.equal(statusResponse.body.internalPlayout.hardwareAccelerationAvailable, true);
+        assert.equal(statusResponse.body.internalPlayout.hardwareAccelerationActive, true);
+        assert.equal(statusResponse.body.internalPlayout.hardwareDevicePath, "/dev/dri/renderD128");
+    } finally {
+        await fs.rm(libraryRoot, { recursive: true, force: true });
+        await fs.rm(hlsOutputRoot, { recursive: true, force: true });
+        await context.cleanup();
+    }
+});
+
 test("internal schedule and IPTV routes can initialize channel state concurrently", async () => {
     const context = await createTestContext();
     const libraryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "andromeda-library-test-"));
