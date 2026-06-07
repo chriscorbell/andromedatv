@@ -13,6 +13,7 @@ import {
     buildLiveHlsTranscodeAttempts,
     TranscodeAccelerationStatus,
 } from "./transcode-acceleration";
+import { runExclusiveTransaction } from "./sqlite-transaction";
 
 export type InternalPlayoutResumeMode = "boundary" | "wall-clock";
 
@@ -226,8 +227,7 @@ async function recordPlayoutStart(
     startOffsetSeconds: number
 ): Promise<number> {
     const timestamp = startedAt.toISOString();
-    await db.exec("BEGIN IMMEDIATE TRANSACTION");
-    try {
+    return runExclusiveTransaction(db, async () => {
         await db.run(
             "UPDATE playout_history SET completed_at = ?, completion_reason = ? " +
             "WHERE completed_at IS NULL",
@@ -246,12 +246,8 @@ async function recordPlayoutStart(
             startOffsetSeconds,
             timestamp
         );
-        await db.exec("COMMIT");
         return Number(result.lastID);
-    } catch (error) {
-        await db.exec("ROLLBACK");
-        throw error;
-    }
+    });
 }
 
 async function markPlayoutHistoryCompleted(

@@ -276,6 +276,8 @@ export function createApp(options: CreateAppOptions) {
             seriesAllowlist: internalScheduleOptions?.seriesAllowlist || [],
             seriesRoot: internalScheduleOptions?.seriesRoot || null,
             scannerDiagnostics: [],
+            unresolvedEpisodeAssets: [],
+            excludedSeries: [],
         } as InternalScheduleDiagnostics,
         internalPlayout: (internalPlayout?.getDiagnostics() || {
             configured: false,

@@ -4,6 +4,7 @@ import path from "path";
 import { promisify } from "util";
 import type { Database } from "sqlite";
 import { computeScheduleRefreshDelay, SchedulePayload } from "./schedule";
+import { runExclusiveTransaction } from "./sqlite-transaction";
 
 const execFileAsync = promisify(execFile);
 
@@ -46,9 +47,23 @@ export type InternalScheduleDiagnostics = {
     scannedEpisodeAssets: number;
     scannedBumpAssets: number;
     scannerDiagnostics: string[];
+    unresolvedEpisodeAssets: UnresolvedEpisodeAssetDiagnostic[];
+    excludedSeries: ExcludedSeriesDiagnostic[];
 };
 
 type MediaRole = "episode" | "bump";
+type MetadataSource = "anidb" | "filename" | "sidecar";
+
+type UnresolvedEpisodeAssetDiagnostic = {
+    filePath: string;
+    reason: string;
+    seriesTitle: string;
+};
+
+type ExcludedSeriesDiagnostic = {
+    reason: string;
+    seriesTitle: string;
+};
 
 type ScannedAsset = {
     role: MediaRole;
@@ -59,6 +74,13 @@ type ScannedAsset = {
     durationSeconds: number;
     videoCodec?: string | null;
     audioCodec?: string | null;
+    anidbSeriesId?: number | null;
+    anidbEpisodeId?: number | null;
+    episodeNumber?: string | null;
+    summary?: string | null;
+    airDate?: string | null;
+    chronologicalOrder?: number | null;
+    metadataSource?: MetadataSource | null;
 };
 
 type MediaAssetRow = {
@@ -68,6 +90,7 @@ type MediaAssetRow = {
     series_title: string | null;
     title: string;
     duration_seconds: number | null;
+    summary: string | null;
 };
 
 type ChannelStateRow = {
@@ -93,6 +116,77 @@ type PlayoutCursor = {
     rotationIndex: number;
 };
 
+type AnidbSeriesRow = {
+    anidb_series_id: number;
+    title: string;
+    sort_title: string | null;
+    synonyms_json: string;
+};
+
+type AnidbEpisodeRow = {
+    anidb_episode_id: number;
+    anidb_series_id: number;
+    episode_number: string;
+    title: string;
+    summary: string | null;
+    air_date: string | null;
+    chronological_order: number;
+};
+
+type MetadataCache = {
+    seriesById: Map<number, AnidbSeriesRow>;
+    seriesByLookupKey: Map<string, AnidbSeriesRow>;
+    episodesById: Map<number, AnidbEpisodeRow>;
+    episodesBySeriesAndNumber: Map<number, Map<string, AnidbEpisodeRow>>;
+};
+
+type SidecarSeriesOverride = {
+    title?: string;
+    sortTitle?: string;
+    anidbSeriesId?: number;
+    synonyms?: string[];
+};
+
+type SidecarEpisodeOverride = {
+    path: string;
+    anidbEpisodeId?: number;
+    episodeNumber?: string;
+    title?: string;
+    summary?: string;
+    airDate?: string;
+    chronologicalOrder?: number;
+    exclude?: boolean;
+    invalidReason?: string;
+};
+
+type SidecarOverride = {
+    series?: SidecarSeriesOverride;
+    episodesByPath: Map<string, SidecarEpisodeOverride>;
+};
+
+type EpisodeFileEntry = {
+    filePath: string;
+    fileName: string;
+    relativePath: string;
+};
+
+type ResolvedEpisodeAsset = {
+    anidbEpisodeId?: number | null;
+    anidbSeriesId?: number | null;
+    airDate?: string | null;
+    chronologicalOrder: number;
+    episodeNumber?: string | null;
+    metadataSource: MetadataSource;
+    seriesTitle: string;
+    summary?: string | null;
+    title: string;
+};
+
+type UnresolvedEpisodeAsset = {
+    reason: string;
+    seriesTitle: string;
+};
+
 export type InternalMediaAsset = {
     id: number;
     role: MediaRole;
@@ -113,9 +207,131 @@ type FfprobeJson = {
 };
 
 const channelStateInitializationLocks = new WeakMap<Database, Promise<void>>();
+const SIDECAR_FILE_NAME = "andromeda.sidecar.json";
+const SIDECAR_ROOT_FIELDS = new Set(["sidecarVersion", "series", "episodes"]);
+const SIDECAR_SERIES_FIELDS = new Set(["title", "sortTitle", "anidbSeriesId", "synonyms"]);
+const SIDECAR_EPISODE_FIELDS = new Set([
+    "path",
+    "anidbEpisodeId",
+    "episodeNumber",
+    "title",
+    "summary",
+    "airDate",
+    "chronologicalOrder",
+    "exclude",
+]);
 
 function naturalCompare(left: string, right: string): number {
     return left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function getUnknownFields(value: Record<string, unknown>, allowedFields: Set<string>) {
+    return Object.keys(value).filter((field) => !allowedFields.has(field));
+}
+
+function normalizeMetadataLookupKey(value: string): string {
+    return value.trim().replace(/\s+/g, " ").toLocaleLowerCase();
+}
+
+function normalizeEpisodeNumber(value: string): string {
+    const normalized = value.trim().toLocaleLowerCase();
+    return normalized.replace(/^0+(?=\d)/, "");
+}
+
+function isFiniteNumber(value: unknown): value is number {
+    return typeof value === "number" && Number.isFinite(value);
+}
+
+function optionalNonEmptyString(
+    value: unknown,
+    fieldName: string,
+    diagnostics: string[]
+): string | undefined {
+    if (value === undefined) {
+        return undefined;
+    }
+    if (typeof value !== "string" || value.trim().length === 0) {
+        diagnostics.push(`Invalid Sidecar Override field ${fieldName}: expected a non-empty string`);
+        return undefined;
+    }
+    return value.trim();
+}
+
+function optionalInteger(
+    value: unknown,
+    fieldName: string,
+    diagnostics: string[]
+): number | undefined {
+    if (value === undefined) {
+        return undefined;
+    }
+    if (!Number.isInteger(value)) {
+        diagnostics.push(`Invalid Sidecar Override field ${fieldName}: expected an integer`);
+        return undefined;
+    }
+    return value as number;
+}
+
+function optionalFiniteNumber(
+    value: unknown,
+    fieldName: string,
+    diagnostics: string[]
+): number | undefined {
+    if (value === undefined) {
+        return undefined;
+    }
+    if (!isFiniteNumber(value)) {
+        diagnostics.push(`Invalid Sidecar Override field ${fieldName}: expected a finite number`);
+        return undefined;
+    }
+    return value;
+}
+
+function parseSidecarEpisodePath(value: unknown, diagnostics: string[]): string | null {
+    const rawPath = optionalNonEmptyString(value, "episodes[].path", diagnostics);
+    if (!rawPath) {
+        return null;
+    }
+
+    const slashPath = rawPath.replace(/\\/g, "/");
+    if (
+        path.posix.isAbsolute(slashPath) ||
+        path.win32.isAbsolute(rawPath) ||
+        slashPath.split("/").includes("..")
+    ) {
+        diagnostics.push(`Invalid Sidecar Override episode path ${rawPath}: path must stay inside the Series directory`);
+        return null;
+    }
+
+    const normalized = path.posix.normalize(slashPath);
+    if (normalized === "." || normalized.startsWith("../")) {
+        diagnostics.push(`Invalid Sidecar Override episode path ${rawPath}: path must stay inside the Series directory`);
+        return null;
+    }
+    return normalized;
+}
+
+function parseEpisodeNumberFromFileName(fileName: string): string | null {
+    const title = getMediaTitle(fileName);
+    const seasonEpisodeMatch = title.match(/\bS\d+\s*E(\d+)\b/i);
+    if (seasonEpisodeMatch?.[1]) {
+        return normalizeEpisodeNumber(seasonEpisodeMatch[1]);
+    }
+
+    const numberMatches = [...title.matchAll(/(?:^|[^\d])(\d{1,4})(?=[^\d]|$)/g)];
+    const lastMatch = numberMatches.at(-1);
+    if (!lastMatch?.[1]) {
+        return null;
+    }
+    return normalizeEpisodeNumber(lastMatch[1]);
+}
+
+function toSidecarRelativePath(seriesPath: string, filePath: string): string {
+    return path.relative(seriesPath, filePath).split(path.sep).join("/");
 }
 
 function getMediaTitle(filePath: string): string {
@@ -185,6 +401,439 @@ async function listDirectoryEntries(root: string, diagnostics: string[]) {
     }
 }
 
+async function listEpisodeFileEntries(
+    seriesPath: string,
+    diagnostics: string[]
+): Promise<EpisodeFileEntry[]> {
+    const entries: EpisodeFileEntry[] = [];
+
+    async function walk(directoryPath: string) {
+        const directoryEntries = (await listDirectoryEntries(directoryPath, diagnostics))
+            .sort((left, right) => naturalCompare(left.name, right.name));
+
+        for (const entry of directoryEntries) {
+            const filePath = path.join(directoryPath, entry.name);
+            if (entry.isDirectory()) {
+                await walk(filePath);
+                continue;
+            }
+            if (!entry.isFile()) {
+                continue;
+            }
+            entries.push({
+                fileName: entry.name,
+                filePath,
+                relativePath: toSidecarRelativePath(seriesPath, filePath),
+            });
+        }
+    }
+
+    await walk(seriesPath);
+    return entries.sort((left, right) => naturalCompare(left.relativePath, right.relativePath));
+}
+
+function parseSynonyms(
+    value: string,
+    seriesTitle: string,
+    diagnostics: string[]
+): string[] {
+    try {
+        const parsed = JSON.parse(value) as unknown;
+        if (!Array.isArray(parsed)) {
+            diagnostics.push(`Ignoring AniDB synonyms for ${seriesTitle}: synonyms_json is not an array`);
+            return [];
+        }
+        return parsed
+            .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+            .map((item) => item.trim());
+    } catch (error) {
+        diagnostics.push(
+            `Ignoring AniDB synonyms for ${seriesTitle}: ${error instanceof Error ? error.message : String(error)}`
+        );
+        return [];
+    }
+}
+
+function addSeriesLookupKey(
+    seriesByLookupKey: Map<string, AnidbSeriesRow>,
+    value: string | null | undefined,
+    series: AnidbSeriesRow
+) {
+    if (!value) {
+        return;
+    }
+    const key = normalizeMetadataLookupKey(value);
+    if (!key || seriesByLookupKey.has(key)) {
+        return;
+    }
+    seriesByLookupKey.set(key, series);
+}
+
+async function loadMetadataCache(
+    db: Database,
+    diagnostics: string[]
+): Promise<MetadataCache> {
+    const seriesRows = await db.all<Array<AnidbSeriesRow>>(
+        "SELECT anidb_series_id, title, sort_title, synonyms_json FROM anidb_series " +
+        "WHERE last_success_at IS NOT NULL " +
+        "ORDER BY title COLLATE NOCASE"
+    );
+    const episodeRows = await db.all<Array<AnidbEpisodeRow>>(
+        "SELECT episodes.anidb_episode_id, episodes.anidb_series_id, episodes.episode_number, " +
+        "episodes.title, episodes.summary, episodes.air_date, episodes.chronological_order " +
+        "FROM anidb_episodes episodes " +
+        "INNER JOIN anidb_series series ON series.anidb_series_id = episodes.anidb_series_id " +
+        "WHERE series.last_success_at IS NOT NULL " +
+        "ORDER BY episodes.anidb_series_id, episodes.chronological_order"
+    );
+
+    const seriesById = new Map<number, AnidbSeriesRow>();
+    const seriesByLookupKey = new Map<string, AnidbSeriesRow>();
+    const episodesById = new Map<number, AnidbEpisodeRow>();
+    const episodesBySeriesAndNumber = new Map<number, Map<string, AnidbEpisodeRow>>();
+
+    for (const series of seriesRows) {
+        seriesById.set(series.anidb_series_id, series);
+        addSeriesLookupKey(seriesByLookupKey, series.title, series);
+        addSeriesLookupKey(seriesByLookupKey, series.sort_title, series);
+        for (const synonym of parseSynonyms(series.synonyms_json, series.title, diagnostics)) {
+            addSeriesLookupKey(seriesByLookupKey, synonym, series);
+        }
+    }
+
+    for (const episode of episodeRows) {
+        episodesById.set(episode.anidb_episode_id, episode);
+        const numberKey = normalizeEpisodeNumber(episode.episode_number);
+        const episodeMap =
+            episodesBySeriesAndNumber.get(episode.anidb_series_id) || new Map<string, AnidbEpisodeRow>();
+        if (!episodeMap.has(numberKey)) {
+            episodeMap.set(numberKey, episode);
+        }
+        episodesBySeriesAndNumber.set(episode.anidb_series_id, episodeMap);
+    }
+
+    return {
+        episodesById,
+        episodesBySeriesAndNumber,
+        seriesById,
+        seriesByLookupKey,
+    };
+}
+
+function parseSidecarSeries(
+    value: unknown,
+    diagnostics: string[]
+): SidecarSeriesOverride | undefined {
+    if (value === undefined) {
+        return undefined;
+    }
+    if (!isRecord(value)) {
+        diagnostics.push("Invalid Sidecar Override field series: expected an object");
+        return undefined;
+    }
+
+    for (const field of getUnknownFields(value, SIDECAR_SERIES_FIELDS)) {
+        diagnostics.push(`Unknown Sidecar Override field series.${field}`);
+    }
+
+    const synonymsValue = value.synonyms;
+    let synonyms: string[] | undefined;
+    if (synonymsValue !== undefined) {
+        if (!Array.isArray(synonymsValue)) {
+            diagnostics.push("Invalid Sidecar Override field series.synonyms: expected an array");
+        } else {
+            synonyms = synonymsValue
+                .map((synonym, index) => optionalNonEmptyString(
+                    synonym,
+                    `series.synonyms[${index}]`,
+                    diagnostics
+                ))
+                .filter((synonym): synonym is string => Boolean(synonym));
+        }
+    }
+
+    const title = optionalNonEmptyString(value.title, "series.title", diagnostics);
+    const sortTitle = optionalNonEmptyString(value.sortTitle, "series.sortTitle", diagnostics);
+    const anidbSeriesId = optionalInteger(
+        value.anidbSeriesId,
+        "series.anidbSeriesId",
+        diagnostics
+    );
+
+    return {
+        ...(title ? { title } : {}),
+        ...(sortTitle ? { sortTitle } : {}),
+        ...(anidbSeriesId !== undefined ? { anidbSeriesId } : {}),
+        ...(synonyms ? { synonyms } : {}),
+    };
+}
+
+function parseSidecarEpisode(
+    value: unknown,
+    diagnostics: string[]
+): SidecarEpisodeOverride | null {
+    if (!isRecord(value)) {
+        diagnostics.push("Invalid Sidecar Override episode entry: expected an object");
+        return null;
+    }
+
+    for (const field of getUnknownFields(value, SIDECAR_EPISODE_FIELDS)) {
+        diagnostics.push(`Unknown Sidecar Override field episodes[].${field}`);
+    }
+
+    const episodePath = parseSidecarEpisodePath(value.path, diagnostics);
+    if (!episodePath) {
+        return null;
+    }
+
+    const exclude = value.exclude === undefined
+        ? undefined
+        : value.exclude === true
+            ? true
+            : value.exclude === false
+                ? false
+                : undefined;
+    if (value.exclude !== undefined && exclude === undefined) {
+        diagnostics.push("Invalid Sidecar Override field episodes[].exclude: expected a boolean");
+    }
+
+    const anidbEpisodeId = optionalInteger(
+        value.anidbEpisodeId,
+        "episodes[].anidbEpisodeId",
+        diagnostics
+    );
+    const episodeNumber = optionalNonEmptyString(
+        value.episodeNumber,
+        "episodes[].episodeNumber",
+        diagnostics
+    );
+    const title = optionalNonEmptyString(value.title, "episodes[].title", diagnostics);
+    const summary = optionalNonEmptyString(value.summary, "episodes[].summary", diagnostics);
+    const airDate = optionalNonEmptyString(value.airDate, "episodes[].airDate", diagnostics);
+    const chronologicalOrder = optionalFiniteNumber(
+        value.chronologicalOrder,
+        "episodes[].chronologicalOrder",
+        diagnostics
+    );
+
+    return {
+        path: episodePath,
+        ...(anidbEpisodeId !== undefined ? { anidbEpisodeId } : {}),
+        ...(episodeNumber ? { episodeNumber } : {}),
+        ...(title ? { title } : {}),
+        ...(summary ? { summary } : {}),
+        ...(airDate ? { airDate } : {}),
+        ...(chronologicalOrder !== undefined ? { chronologicalOrder } : {}),
+        ...(exclude !== undefined ? { exclude } : {}),
+    };
+}
+
+async function readSidecarOverride(
+    seriesPath: string,
+    diagnostics: string[]
+): Promise<SidecarOverride | null> {
+    const sidecarPath = path.join(seriesPath, SIDECAR_FILE_NAME);
+    let rawSidecar: string;
+    try {
+        rawSidecar = await fs.readFile(sidecarPath, "utf8");
+    } catch (error) {
+        if (
+            error &&
+            typeof error === "object" &&
+            "code" in error &&
+            (error as { code?: unknown }).code === "ENOENT"
+        ) {
+            return null;
+        }
+        diagnostics.push(
+            `Unable to read Sidecar Override ${sidecarPath}: ${error instanceof Error ? error.message : String(error)}`
+        );
+        return null;
+    }
+
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(rawSidecar);
+    } catch (error) {
+        diagnostics.push(
+            `Invalid Sidecar Override ${sidecarPath}: ${error instanceof Error ? error.message : String(error)}`
+        );
+        return null;
+    }
+
+    if (!isRecord(parsed)) {
+        diagnostics.push(`Invalid Sidecar Override ${sidecarPath}: expected a JSON object`);
+        return null;
+    }
+
+    for (const field of getUnknownFields(parsed, SIDECAR_ROOT_FIELDS)) {
+        diagnostics.push(`Unknown Sidecar Override field ${field}`);
+    }
+
+    if (parsed.sidecarVersion !== 1) {
+        diagnostics.push(`Invalid Sidecar Override ${sidecarPath}: sidecarVersion must be 1`);
+        return null;
+    }
+
+    const episodesByPath = new Map<string, SidecarEpisodeOverride>();
+    const chronologyPathsByValue = new Map<number, string[]>();
+    if (parsed.episodes !== undefined) {
+        if (!Array.isArray(parsed.episodes)) {
+            diagnostics.push("Invalid Sidecar Override field episodes: expected an array");
+        } else {
+            for (const episodeValue of parsed.episodes) {
+                const episode = parseSidecarEpisode(episodeValue, diagnostics);
+                if (!episode) {
+                    continue;
+                }
+                if (episodesByPath.has(episode.path)) {
+                    diagnostics.push(`Duplicate Sidecar Override episode path ${episode.path}`);
+                    episodesByPath.set(episode.path, {
+                        ...episode,
+                        invalidReason: "duplicate sidecar episode path",
+                    });
+                    continue;
+                }
+                episodesByPath.set(episode.path, episode);
+                if (episode.chronologicalOrder !== undefined) {
+                    const paths = chronologyPathsByValue.get(episode.chronologicalOrder) || [];
+                    paths.push(episode.path);
+                    chronologyPathsByValue.set(episode.chronologicalOrder, paths);
+                }
+            }
+        }
+    }
+
+    for (const paths of chronologyPathsByValue.values()) {
+        if (paths.length < 2) {
+            continue;
+        }
+        diagnostics.push(`Duplicate Sidecar Override chronologicalOrder for ${paths.join(", ")}`);
+        for (const episodePath of paths) {
+            const episode = episodesByPath.get(episodePath);
+            if (episode) {
+                episodesByPath.set(episodePath, {
+                    ...episode,
+                    invalidReason: "duplicate sidecar chronological order",
+                });
+            }
+        }
+    }
+
+    return {
+        episodesByPath,
+        series: parseSidecarSeries(parsed.series, diagnostics),
+    };
+}
+
+function resolveSeriesMetadata(
+    folderTitle: string,
+    sidecar: SidecarOverride | null,
+    cache: MetadataCache
+) {
+    const sidecarSeriesId = sidecar?.series?.anidbSeriesId;
+    if (sidecarSeriesId !== undefined) {
+        return cache.seriesById.get(sidecarSeriesId) || null;
+    }
+    return cache.seriesByLookupKey.get(normalizeMetadataLookupKey(folderTitle)) || null;
+}
+
+function findCachedEpisode(
+    cache: MetadataCache,
+    cachedSeries: AnidbSeriesRow | null,
+    sidecarEpisode: SidecarEpisodeOverride | undefined,
+    parsedEpisodeNumber: string | null
+): AnidbEpisodeRow | null {
+    if (sidecarEpisode?.anidbEpisodeId !== undefined) {
+        return cache.episodesById.get(sidecarEpisode.anidbEpisodeId) || null;
+    }
+
+    if (!cachedSeries) {
+        return null;
+    }
+
+    const episodeNumber = sidecarEpisode?.episodeNumber || parsedEpisodeNumber;
+    if (!episodeNumber) {
+        return null;
+    }
+
+    const episodeMap = cache.episodesBySeriesAndNumber.get(cachedSeries.anidb_series_id);
+    return episodeMap?.get(normalizeEpisodeNumber(episodeNumber)) || null;
+}
+
+function getResolvedSeriesTitle(
+    folderTitle: string,
+    sidecar: SidecarOverride | null,
+    cachedSeries: AnidbSeriesRow | null
+): string {
+    return sidecar?.series?.title || cachedSeries?.title || folderTitle;
+}
+
+function resolveEpisodeAsset(
+    folderTitle: string,
+    fileName: string,
+    relativePath: string,
+    episodeIndex: number,
+    sidecar: SidecarOverride | null,
+    cachedSeries: AnidbSeriesRow | null,
+    cache: MetadataCache,
+    allowFilenameFallback: boolean
+): ResolvedEpisodeAsset | UnresolvedEpisodeAsset {
+    const sidecarEpisode = sidecar?.episodesByPath.get(relativePath);
+    const parsedEpisodeNumber = sidecarEpisode?.episodeNumber || parseEpisodeNumberFromFileName(fileName);
+    const cachedEpisode = findCachedEpisode(
+        cache,
+        cachedSeries,
+        sidecarEpisode,
+        parsedEpisodeNumber
+    );
+    const seriesTitle = getResolvedSeriesTitle(folderTitle, sidecar, cachedSeries);
+
+    if (sidecarEpisode?.exclude) {
+        return {
+            reason: "excluded by sidecar override",
+            seriesTitle,
+        };
+    }
+
+    if (sidecarEpisode?.invalidReason) {
+        return {
+            reason: sidecarEpisode.invalidReason,
+            seriesTitle,
+        };
+    }
+
+    const chronologicalOrder =
+        sidecarEpisode?.chronologicalOrder ??
+        cachedEpisode?.chronological_order ??
+        (allowFilenameFallback ? episodeIndex + 1 : undefined);
+
+    if (!isFiniteNumber(chronologicalOrder)) {
+        return {
+            reason: "no trusted chronological episode order",
+            seriesTitle,
+        };
+    }
+
+    const metadataSource: MetadataSource = sidecarEpisode
+        ? "sidecar"
+        : cachedEpisode || cachedSeries
+            ? "anidb"
+            : "filename";
+
+    return {
+        airDate: sidecarEpisode?.airDate ?? cachedEpisode?.air_date ?? null,
+        anidbEpisodeId: sidecarEpisode?.anidbEpisodeId ?? cachedEpisode?.anidb_episode_id ?? null,
+        anidbSeriesId: sidecar?.series?.anidbSeriesId ?? cachedSeries?.anidb_series_id ?? null,
+        chronologicalOrder,
+        episodeNumber: sidecarEpisode?.episodeNumber ?? cachedEpisode?.episode_number ?? parsedEpisodeNumber ?? null,
+        metadataSource,
+        seriesTitle,
+        summary: sidecarEpisode?.summary ?? cachedEpisode?.summary ?? null,
+        title: sidecarEpisode?.title ?? cachedEpisode?.title ?? getMediaTitle(fileName),
+    };
+}
+
 async function scanMediaFile(
     filePath: string,
     asset: Omit<ScannedAsset, "durationSeconds" | "videoCodec" | "audioCodec">,
@@ -214,12 +863,16 @@ async function scanMediaFile(
 
 export async function scanInternalLibrary(options: InternalScheduleOptions) {
     const diagnostics: string[] = [];
+    const unresolvedEpisodeAssets: UnresolvedEpisodeAssetDiagnostic[] = [];
+    const excludedSeriesByTitle = new Map<string, ExcludedSeriesDiagnostic>();
     const probeMediaAsset = options.probeMediaAsset || probeMediaAssetWithFfprobe;
     const allowlist = new Set(
         (options.seriesAllowlist || [])
             .map((seriesTitle) => seriesTitle.trim())
             .filter(Boolean)
     );
+    const allowFilenameFallback = allowlist.size > 0;
+    const metadataCache = await loadMetadataCache(options.db, diagnostics);
     const assets: ScannedAsset[] = [];
 
     const seriesEntries = (await listDirectoryEntries(options.seriesRoot, diagnostics))
@@ -233,32 +886,86 @@ export async function scanInternalLibrary(options: InternalScheduleOptions) {
         }
 
         const seriesPath = path.join(options.seriesRoot, seriesTitle);
-        const episodeEntries = (await listDirectoryEntries(seriesPath, diagnostics))
-            .filter((entry) => entry.isFile())
-            .sort((left, right) => naturalCompare(left.name, right.name));
+        const sidecar = await readSidecarOverride(seriesPath, diagnostics);
+        const cachedSeries = resolveSeriesMetadata(seriesTitle, sidecar, metadataCache);
+        const episodeEntries = await listEpisodeFileEntries(seriesPath, diagnostics);
+        let schedulableEpisodeCount = 0;
+        let playableEpisodeCount = 0;
+        let lastUnresolvedReason = "no trusted chronological episode order";
 
-        for (const episodeEntry of episodeEntries) {
-            const filePath = path.join(seriesPath, episodeEntry.name);
-            if (!isSupportedMediaFile(episodeEntry.name)) {
-                diagnostics.push(`Skipping unsupported Episode Asset ${filePath}`);
+        for (const [episodeIndex, episodeEntry] of episodeEntries.entries()) {
+            if (episodeEntry.fileName === SIDECAR_FILE_NAME) {
+                continue;
+            }
+            if (!isSupportedMediaFile(episodeEntry.fileName)) {
+                if (episodeEntry.fileName !== SIDECAR_FILE_NAME) {
+                    diagnostics.push(`Skipping unsupported Episode Asset ${episodeEntry.filePath}`);
+                }
                 continue;
             }
 
-            const asset = await scanMediaFile(
-                filePath,
-                {
-                    filePath,
-                    role: "episode",
-                    seriesTitle,
-                    sortKey: episodeEntry.name,
-                    title: getMediaTitle(episodeEntry.name),
-                },
-                probeMediaAsset,
-                diagnostics
-            );
-            if (asset) {
-                assets.push(asset);
+            let facts: MediaProbeFacts;
+            try {
+                facts = await probeMediaAsset(episodeEntry.filePath);
+            } catch (error) {
+                diagnostics.push(
+                    `Skipping ${episodeEntry.filePath}: ${error instanceof Error ? error.message : String(error)}`
+                );
+                continue;
             }
+
+            if (!Number.isFinite(facts.durationSeconds) || facts.durationSeconds <= 0) {
+                diagnostics.push(`Skipping ${episodeEntry.filePath}: missing usable duration`);
+                continue;
+            }
+
+            playableEpisodeCount += 1;
+            const resolved = resolveEpisodeAsset(
+                seriesTitle,
+                episodeEntry.fileName,
+                episodeEntry.relativePath,
+                episodeIndex,
+                sidecar,
+                cachedSeries,
+                metadataCache,
+                allowFilenameFallback
+            );
+            if ("reason" in resolved) {
+                lastUnresolvedReason = resolved.reason;
+                unresolvedEpisodeAssets.push({
+                    filePath: episodeEntry.filePath,
+                    reason: resolved.reason,
+                    seriesTitle: resolved.seriesTitle,
+                });
+                continue;
+            }
+
+            schedulableEpisodeCount += 1;
+            assets.push({
+                airDate: resolved.airDate,
+                anidbEpisodeId: resolved.anidbEpisodeId,
+                anidbSeriesId: resolved.anidbSeriesId,
+                audioCodec: facts.audioCodec || null,
+                chronologicalOrder: resolved.chronologicalOrder,
+                durationSeconds: facts.durationSeconds,
+                episodeNumber: resolved.episodeNumber,
+                filePath: episodeEntry.filePath,
+                metadataSource: resolved.metadataSource,
+                role: "episode",
+                seriesTitle: resolved.seriesTitle,
+                sortKey: episodeEntry.relativePath,
+                summary: resolved.summary,
+                title: resolved.title,
+                videoCodec: facts.videoCodec || null,
+            });
+        }
+
+        if (playableEpisodeCount > 0 && schedulableEpisodeCount === 0) {
+            const resolvedSeriesTitle = getResolvedSeriesTitle(seriesTitle, sidecar, cachedSeries);
+            excludedSeriesByTitle.set(resolvedSeriesTitle, {
+                reason: lastUnresolvedReason,
+                seriesTitle: resolvedSeriesTitle,
+            });
         }
     }
 
@@ -290,36 +997,92 @@ export async function scanInternalLibrary(options: InternalScheduleOptions) {
         }
     }
 
-    return { assets, diagnostics };
+    return {
+        assets,
+        diagnostics,
+        excludedSeries: [...excludedSeriesByTitle.values()]
+            .sort((left, right) => naturalCompare(left.seriesTitle, right.seriesTitle)),
+        unresolvedEpisodeAssets,
+    };
 }
 
-async function persistMediaAssets(db: Database, assets: ScannedAsset[], now: Date) {
-    const updatedAt = now.toISOString();
-    for (const asset of assets) {
-        await db.run(
-            "INSERT INTO media_assets " +
-            "(file_path, role, series_title, title, duration_seconds, video_codec, audio_codec, sort_key, updated_at) " +
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) " +
-            "ON CONFLICT(file_path) DO UPDATE SET " +
-            "role = excluded.role, " +
-            "series_title = excluded.series_title, " +
-            "title = excluded.title, " +
-            "duration_seconds = excluded.duration_seconds, " +
-            "video_codec = excluded.video_codec, " +
-            "audio_codec = excluded.audio_codec, " +
-            "sort_key = excluded.sort_key, " +
-            "updated_at = excluded.updated_at",
-            asset.filePath,
-            asset.role,
-            asset.seriesTitle,
-            asset.title,
-            asset.durationSeconds,
-            asset.videoCodec || null,
-            asset.audioCodec || null,
-            asset.sortKey,
-            updatedAt
-        );
+function isPathWithinRoot(filePath: string, root: string): boolean {
+    const relativePath = path.relative(root, filePath);
+    return Boolean(relativePath) && !relativePath.startsWith("..") && !path.isAbsolute(relativePath);
+}
+
+async function pruneStaleMediaAssets(
+    db: Database,
+    assets: ScannedAsset[],
+    seriesRoot: string,
+    bumpsRoot: string
+) {
+    const scannedPaths = new Set(assets.map((asset) => asset.filePath));
+    const existingRows = await db.all<Array<{ file_path: string }>>(
+        "SELECT file_path FROM media_assets"
+    );
+
+    for (const row of existingRows) {
+        const isManagedPath =
+            isPathWithinRoot(row.file_path, seriesRoot) ||
+            isPathWithinRoot(row.file_path, bumpsRoot);
+        if (isManagedPath && !scannedPaths.has(row.file_path)) {
+            await db.run("DELETE FROM media_assets WHERE file_path = ?", row.file_path);
+        }
     }
+}
+
+async function persistMediaAssets(
+    db: Database,
+    assets: ScannedAsset[],
+    now: Date,
+    seriesRoot: string,
+    bumpsRoot: string
+) {
+    const updatedAt = now.toISOString();
+    return runExclusiveTransaction(db, async () => {
+        for (const asset of assets) {
+            await db.run(
+                "INSERT INTO media_assets " +
+                "(file_path, role, series_title, title, duration_seconds, video_codec, audio_codec, sort_key, " +
+                "anidb_series_id, anidb_episode_id, episode_number, summary, air_date, chronological_order, metadata_source, updated_at) " +
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+                "ON CONFLICT(file_path) DO UPDATE SET " +
+                "role = excluded.role, " +
+                "series_title = excluded.series_title, " +
+                "title = excluded.title, " +
+                "duration_seconds = excluded.duration_seconds, " +
+                "video_codec = excluded.video_codec, " +
+                "audio_codec = excluded.audio_codec, " +
+                "sort_key = excluded.sort_key, " +
+                "anidb_series_id = excluded.anidb_series_id, " +
+                "anidb_episode_id = excluded.anidb_episode_id, " +
+                "episode_number = excluded.episode_number, " +
+                "summary = excluded.summary, " +
+                "air_date = excluded.air_date, " +
+                "chronological_order = excluded.chronological_order, " +
+                "metadata_source = excluded.metadata_source, " +
+                "updated_at = excluded.updated_at",
+                asset.filePath,
+                asset.role,
+                asset.seriesTitle,
+                asset.title,
+                asset.durationSeconds,
+                asset.videoCodec || null,
+                asset.audioCodec || null,
+                asset.sortKey,
+                asset.anidbSeriesId || null,
+                asset.anidbEpisodeId || null,
+                asset.episodeNumber || null,
+                asset.summary || null,
+                asset.airDate || null,
+                asset.chronologicalOrder ?? null,
+                asset.metadataSource || null,
+                updatedAt
+            );
+        }
+        await pruneStaleMediaAssets(db, assets, seriesRoot, bumpsRoot);
+    });
 }
 
 async function ensureChannelState(
@@ -398,6 +1161,7 @@ async function createInitialRotation(db: Database, random: () => number) {
     const seriesRows = await db.all<Array<{ series_title: string }>>(
         "SELECT DISTINCT series_title FROM media_assets " +
         "WHERE role = 'episode' AND series_title IS NOT NULL AND duration_seconds IS NOT NULL " +
+        "AND chronological_order IS NOT NULL " +
         "ORDER BY series_title COLLATE NOCASE"
     );
     const seriesTitles = seriesRows.map((row) => row.series_title);
@@ -413,7 +1177,8 @@ async function createInitialRotation(db: Database, random: () => number) {
 
         const episodeCount = await db.get<{ count: number }>(
             "SELECT COUNT(*) AS count FROM media_assets " +
-            "WHERE role = 'episode' AND series_title = ? AND duration_seconds IS NOT NULL",
+            "WHERE role = 'episode' AND series_title = ? AND duration_seconds IS NOT NULL " +
+            "AND chronological_order IS NOT NULL",
             seriesTitle
         );
         await db.run(
@@ -426,12 +1191,13 @@ async function createInitialRotation(db: Database, random: () => number) {
 
 async function loadScheduleAssets(db: Database) {
     const episodes = await db.all<Array<MediaAssetRow>>(
-        "SELECT id, role, file_path, series_title, title, duration_seconds FROM media_assets " +
+        "SELECT id, role, file_path, series_title, title, duration_seconds, summary FROM media_assets " +
         "WHERE role = 'episode' AND series_title IS NOT NULL AND duration_seconds IS NOT NULL " +
-        "ORDER BY series_title COLLATE NOCASE, sort_key COLLATE NOCASE, title COLLATE NOCASE"
+        "AND chronological_order IS NOT NULL " +
+        "ORDER BY series_title COLLATE NOCASE, chronological_order, sort_key COLLATE NOCASE, title COLLATE NOCASE"
     );
     const bumps = await db.all<Array<MediaAssetRow>>(
-        "SELECT id, role, file_path, series_title, title, duration_seconds FROM media_assets " +
+        "SELECT id, role, file_path, series_title, title, duration_seconds, summary FROM media_assets " +
         "WHERE role = 'bump' AND duration_seconds IS NOT NULL " +
         "ORDER BY sort_key COLLATE NOCASE, title COLLATE NOCASE"
     );
@@ -468,6 +1234,8 @@ function buildDiagnostics(
         seriesAllowlist: options.seriesAllowlist || [],
         seriesRoot: options.seriesRoot,
         scannerDiagnostics: scan.diagnostics,
+        unresolvedEpisodeAssets: scan.unresolvedEpisodeAssets,
+        excludedSeries: scan.excludedSeries,
     };
 }
 
@@ -607,7 +1375,7 @@ export async function loadCurrentInternalMediaAsset(
     const now = options.now ? options.now() : new Date();
     const random = options.random || Math.random;
     const scan = await scanInternalLibrary(options);
-    await persistMediaAssets(options.db, scan.assets, now);
+    await persistMediaAssets(options.db, scan.assets, now, options.seriesRoot, options.bumpsRoot);
     const state = await ensureChannelState(options.db, random, now);
     const { episodes, bumps } = await loadScheduleAssets(options.db);
     const rotationRows = await loadRotationRows(options.db);
@@ -638,7 +1406,7 @@ export async function advanceInternalPlayoutOnCompletion(
     const now = options.now ? options.now() : new Date();
     const random = options.random || Math.random;
     const scan = await scanInternalLibrary(options);
-    await persistMediaAssets(options.db, scan.assets, now);
+    await persistMediaAssets(options.db, scan.assets, now, options.seriesRoot, options.bumpsRoot);
     const state = await ensureChannelState(options.db, random, now);
     const { episodes, bumps } = await loadScheduleAssets(options.db);
     const rotationRows = await loadRotationRows(options.db);
@@ -654,8 +1422,7 @@ export async function advanceInternalPlayoutOnCompletion(
 
     advancePlayoutCursor(cursor, currentAsset, rotationRows, episodesBySeries, bumps);
 
-    await options.db.exec("BEGIN IMMEDIATE TRANSACTION");
-    try {
+    await runExclusiveTransaction(options.db, async () => {
         await options.db.run(
             "UPDATE channel_state SET " +
             "current_rotation_index = ?, " +
@@ -677,12 +1444,7 @@ export async function advanceInternalPlayoutOnCompletion(
                 seriesTitle
             );
         }
-
-        await options.db.exec("COMMIT");
-    } catch (error) {
-        await options.db.exec("ROLLBACK");
-        throw error;
-    }
+    });
 
     return true;
 }
@@ -693,7 +1455,7 @@ export async function loadInternalSchedulePayload(
     const now = options.now ? options.now() : new Date();
     const random = options.random || Math.random;
     const scan = await scanInternalLibrary(options);
-    await persistMediaAssets(options.db, scan.assets, now);
+    await persistMediaAssets(options.db, scan.assets, now, options.seriesRoot, options.bumpsRoot);
     const state = await ensureChannelState(options.db, random, now);
     const { episodes, bumps } = await loadScheduleAssets(options.db);
     const rotationRows = await loadRotationRows(options.db);
@@ -711,6 +1473,7 @@ export async function loadInternalSchedulePayload(
 
         const stopAt = addSeconds(cursorTime, asset.duration_seconds || 0);
         schedule.push({
+            ...(asset.summary ? { description: asset.summary } : {}),
             ...(asset.role === "episode" ? { episode: asset.title } : {}),
             live: schedule.length === 0,
             startAt: cursorTime.toISOString(),

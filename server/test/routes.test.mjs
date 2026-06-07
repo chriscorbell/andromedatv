@@ -375,6 +375,294 @@ test("schedule endpoint serves an internal preview from allowlisted media assets
     }
 });
 
+test("internal schedule resolves schedulable series from the AniDB metadata cache", async () => {
+    const context = await createTestContext();
+    const libraryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "andromeda-library-test-"));
+
+    try {
+        const seriesRoot = path.join(libraryRoot, "series");
+        const bumpsRoot = path.join(libraryRoot, "bumps");
+        await fs.mkdir(path.join(seriesRoot, "Cached Series"), { recursive: true });
+        await fs.mkdir(path.join(seriesRoot, "Unresolved Series"), { recursive: true });
+        await fs.mkdir(bumpsRoot, { recursive: true });
+        await fs.writeFile(path.join(seriesRoot, "Cached Series", "Cached Series - 01.mkv"), "fixture");
+        await fs.writeFile(path.join(seriesRoot, "Cached Series", "Cached Series - 02.mkv"), "fixture");
+        await fs.writeFile(path.join(seriesRoot, "Unresolved Series", "Unresolved Series - 01.mkv"), "fixture");
+
+        await context.db.run(
+            "INSERT INTO anidb_series " +
+            "(anidb_series_id, title, sort_title, synonyms_json, last_success_at, updated_at) " +
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            1001,
+            "Cached Series",
+            "Cached Series",
+            JSON.stringify(["Cached Series TV"]),
+            "2026-03-13T12:00:00.000Z",
+            "2026-03-13T12:00:00.000Z"
+        );
+        await context.db.run(
+            "INSERT INTO anidb_episodes " +
+            "(anidb_episode_id, anidb_series_id, episode_number, title, summary, air_date, chronological_order, updated_at) " +
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            5002,
+            1001,
+            "2",
+            "Cached Episode Two",
+            "The cached second episode is first chronologically.",
+            "2026-03-02",
+            1,
+            "2026-03-13T12:00:00.000Z"
+        );
+        await context.db.run(
+            "INSERT INTO anidb_episodes " +
+            "(anidb_episode_id, anidb_series_id, episode_number, title, summary, air_date, chronological_order, updated_at) " +
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            5001,
+            1001,
+            "1",
+            "Cached Episode One",
+            "The cached first episode follows second.",
+            "2026-03-01",
+            2,
+            "2026-03-13T12:00:00.000Z"
+        );
+
+        const app = createApp({
+            corsOrigin: "*",
+            db: context.db,
+            ersatzBaseUrl: new URL("http://127.0.0.1:8409"),
+            jwtSecret: "test-secret",
+            serveStatic: false,
+            statusApiMode: "public",
+            internalSchedule: {
+                bumpsRoot,
+                seriesRoot,
+                probeMediaAsset: async () => ({
+                    durationSeconds: 1800,
+                    videoCodec: "h264",
+                    audioCodec: "aac",
+                }),
+                random: () => 0,
+                now: () => new Date("2026-03-14T12:00:00.000Z"),
+            },
+        });
+
+        const scheduleResponse = await request(app)
+            .get("/api/schedule");
+
+        assert.equal(scheduleResponse.status, 200);
+        assert.deepEqual(
+            scheduleResponse.body.schedule.map((item) => item.episode).slice(0, 2),
+            ["Cached Episode Two", "Cached Episode One"]
+        );
+        assert.equal(
+            scheduleResponse.body.schedule.some((item) => item.title === "Unresolved Series"),
+            false
+        );
+
+        const persistedAssets = await context.db.all(
+            "SELECT series_title, title, anidb_series_id, anidb_episode_id, chronological_order, metadata_source " +
+            "FROM media_assets WHERE role = 'episode' ORDER BY chronological_order"
+        );
+        assert.deepEqual(persistedAssets, [
+            {
+                series_title: "Cached Series",
+                title: "Cached Episode Two",
+                anidb_series_id: 1001,
+                anidb_episode_id: 5002,
+                chronological_order: 1,
+                metadata_source: "anidb",
+            },
+            {
+                series_title: "Cached Series",
+                title: "Cached Episode One",
+                anidb_series_id: 1001,
+                anidb_episode_id: 5001,
+                chronological_order: 2,
+                metadata_source: "anidb",
+            },
+        ]);
+
+        const statusResponse = await request(app)
+            .get("/api/status");
+
+        assert.equal(statusResponse.status, 200);
+        assert.deepEqual(
+            statusResponse.body.internalSchedule.unresolvedEpisodeAssets.map((asset) => asset.seriesTitle),
+            ["Unresolved Series"]
+        );
+        assert.deepEqual(statusResponse.body.internalSchedule.excludedSeries, [
+            {
+                reason: "no trusted chronological episode order",
+                seriesTitle: "Unresolved Series",
+            },
+        ]);
+    } finally {
+        await fs.rm(libraryRoot, { recursive: true, force: true });
+        await context.cleanup();
+    }
+});
+
+test("sidecar overrides take precedence over cached AniDB metadata", async () => {
+    const context = await createTestContext();
+    const libraryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "andromeda-library-test-"));
+
+    try {
+        const seriesRoot = path.join(libraryRoot, "series");
+        const bumpsRoot = path.join(libraryRoot, "bumps");
+        const seriesPath = path.join(seriesRoot, "Curated Folder");
+        await fs.mkdir(seriesPath, { recursive: true });
+        await fs.mkdir(bumpsRoot, { recursive: true });
+        await fs.writeFile(path.join(seriesPath, "episode-01.mkv"), "fixture");
+        await fs.writeFile(path.join(seriesPath, "episode-02.mkv"), "fixture");
+        await fs.writeFile(path.join(seriesPath, "episode-03.mkv"), "fixture");
+        await fs.writeFile(
+            path.join(seriesPath, "andromeda.sidecar.json"),
+            JSON.stringify({
+                sidecarVersion: 1,
+                series: {
+                    title: "Sidecar Series",
+                    anidbSeriesId: 2002,
+                },
+                episodes: [
+                    {
+                        path: "episode-01.mkv",
+                        anidbEpisodeId: 7001,
+                        title: "Sidecar Pilot",
+                        chronologicalOrder: 2,
+                    },
+                    {
+                        path: "episode-02.mkv",
+                        anidbEpisodeId: 7002,
+                        chronologicalOrder: 1,
+                    },
+                    {
+                        path: "episode-03.mkv",
+                        title: "Opening Without Cache",
+                        chronologicalOrder: 0,
+                        exclude: true,
+                    },
+                ],
+            })
+        );
+
+        await context.db.run(
+            "INSERT INTO anidb_series " +
+            "(anidb_series_id, title, sort_title, synonyms_json, last_success_at, updated_at) " +
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            2002,
+            "Cached Series Title",
+            "Cached Series Title",
+            "[]",
+            "2026-03-13T12:00:00.000Z",
+            "2026-03-13T12:00:00.000Z"
+        );
+        await context.db.run(
+            "INSERT INTO anidb_episodes " +
+            "(anidb_episode_id, anidb_series_id, episode_number, title, summary, air_date, chronological_order, updated_at) " +
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            7001,
+            2002,
+            "1",
+            "Cached Pilot",
+            null,
+            null,
+            1,
+            "2026-03-13T12:00:00.000Z"
+        );
+        await context.db.run(
+            "INSERT INTO anidb_episodes " +
+            "(anidb_episode_id, anidb_series_id, episode_number, title, summary, air_date, chronological_order, updated_at) " +
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            7002,
+            2002,
+            "2",
+            "Cached Second",
+            null,
+            null,
+            2,
+            "2026-03-13T12:00:00.000Z"
+        );
+
+        const app = createApp({
+            corsOrigin: "*",
+            db: context.db,
+            ersatzBaseUrl: new URL("http://127.0.0.1:8409"),
+            jwtSecret: "test-secret",
+            serveStatic: false,
+            statusApiMode: "public",
+            internalSchedule: {
+                bumpsRoot,
+                seriesRoot,
+                probeMediaAsset: async () => ({
+                    durationSeconds: 1800,
+                    videoCodec: "h264",
+                    audioCodec: "aac",
+                }),
+                random: () => 0,
+                now: () => new Date("2026-03-14T12:00:00.000Z"),
+            },
+        });
+
+        const scheduleResponse = await request(app)
+            .get("/api/schedule");
+
+        assert.equal(scheduleResponse.status, 200);
+        assert.deepEqual(
+            scheduleResponse.body.schedule.map((item) => ({
+                episode: item.episode,
+                title: item.title,
+            })).slice(0, 2),
+            [
+                { episode: "Cached Second", title: "Sidecar Series" },
+                { episode: "Sidecar Pilot", title: "Sidecar Series" },
+            ]
+        );
+
+        const persistedAssets = await context.db.all(
+            "SELECT series_title, title, anidb_series_id, anidb_episode_id, chronological_order, metadata_source " +
+            "FROM media_assets WHERE role = 'episode' ORDER BY chronological_order"
+        );
+        assert.deepEqual(persistedAssets, [
+            {
+                series_title: "Sidecar Series",
+                title: "Cached Second",
+                anidb_series_id: 2002,
+                anidb_episode_id: 7002,
+                chronological_order: 1,
+                metadata_source: "sidecar",
+            },
+            {
+                series_title: "Sidecar Series",
+                title: "Sidecar Pilot",
+                anidb_series_id: 2002,
+                anidb_episode_id: 7001,
+                chronological_order: 2,
+                metadata_source: "sidecar",
+            },
+        ]);
+
+        const statusResponse = await request(app)
+            .get("/api/status");
+
+        assert.equal(statusResponse.status, 200);
+        assert.deepEqual(statusResponse.body.internalSchedule.excludedSeries, []);
+        assert.deepEqual(
+            statusResponse.body.internalSchedule.unresolvedEpisodeAssets,
+            [
+                {
+                    filePath: path.join(seriesPath, "episode-03.mkv"),
+                    reason: "excluded by sidecar override",
+                    seriesTitle: "Sidecar Series",
+                },
+            ]
+        );
+    } finally {
+        await fs.rm(libraryRoot, { recursive: true, force: true });
+        await context.cleanup();
+    }
+});
+
 test("internal IPTV route serves generated live HLS output", async () => {
     const context = await createTestContext();
     const libraryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "andromeda-library-test-"));

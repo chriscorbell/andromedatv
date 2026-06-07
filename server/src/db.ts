@@ -1,6 +1,21 @@
 import sqlite3 from "sqlite3";
 import { open, Database } from "sqlite";
 
+async function addColumnIfMissing(
+    db: Database,
+    tableName: string,
+    columnName: string,
+    definition: string
+) {
+    const columns = await db.all<Array<{ name: string }>>(
+        `PRAGMA table_info(${tableName})`
+    );
+    const hasColumn = columns.some((column) => column.name === columnName);
+    if (!hasColumn) {
+        await db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${definition}`);
+    }
+}
+
 export async function initDb(dbPath: string): Promise<Database> {
     const db = await open({
         filename: dbPath,
@@ -24,22 +39,18 @@ export async function initDb(dbPath: string): Promise<Database> {
         "CREATE INDEX IF NOT EXISTS idx_users_nickname_nocase ON users(nickname COLLATE NOCASE);"
     );
 
-    const userColumns = await db.all<
-        Array<{ name: string }>
-    >("PRAGMA table_info(users)");
-    const hasBannedColumn = userColumns.some((column) => column.name === "banned");
-    if (!hasBannedColumn) {
-        await db.exec(
-            "ALTER TABLE users ADD COLUMN banned INTEGER NOT NULL DEFAULT 0"
-        );
-    }
-
-    const hasIsAdminColumn = userColumns.some((column) => column.name === "is_admin");
-    if (!hasIsAdminColumn) {
-        await db.exec(
-            "ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0"
-        );
-    }
+    await addColumnIfMissing(
+        db,
+        "users",
+        "banned",
+        "banned INTEGER NOT NULL DEFAULT 0"
+    );
+    await addColumnIfMissing(
+        db,
+        "users",
+        "is_admin",
+        "is_admin INTEGER NOT NULL DEFAULT 0"
+    );
 
     await db.exec(
         "CREATE TABLE IF NOT EXISTS messages (" +
@@ -70,6 +81,97 @@ export async function initDb(dbPath: string): Promise<Database> {
         "ON media_assets(role, series_title, sort_key);"
     );
 
+    await addColumnIfMissing(
+        db,
+        "media_assets",
+        "anidb_series_id",
+        "anidb_series_id INTEGER"
+    );
+    await addColumnIfMissing(
+        db,
+        "media_assets",
+        "anidb_episode_id",
+        "anidb_episode_id INTEGER"
+    );
+    await addColumnIfMissing(
+        db,
+        "media_assets",
+        "episode_number",
+        "episode_number TEXT"
+    );
+    await addColumnIfMissing(
+        db,
+        "media_assets",
+        "summary",
+        "summary TEXT"
+    );
+    await addColumnIfMissing(
+        db,
+        "media_assets",
+        "air_date",
+        "air_date TEXT"
+    );
+    await addColumnIfMissing(
+        db,
+        "media_assets",
+        "chronological_order",
+        "chronological_order REAL"
+    );
+    await addColumnIfMissing(
+        db,
+        "media_assets",
+        "metadata_source",
+        "metadata_source TEXT"
+    );
+
+    await db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_media_assets_role_series_chronological " +
+        "ON media_assets(role, series_title, chronological_order);"
+    );
+
+    await db.exec(
+        "CREATE TABLE IF NOT EXISTS anidb_series (" +
+        "anidb_series_id INTEGER PRIMARY KEY," +
+        "title TEXT NOT NULL," +
+        "sort_title TEXT," +
+        "synonyms_json TEXT NOT NULL DEFAULT '[]'," +
+        "last_success_at TEXT," +
+        "last_attempt_at TEXT," +
+        "last_error TEXT," +
+        "next_retry_at TEXT," +
+        "updated_at TEXT NOT NULL" +
+        ");"
+    );
+
+    await db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_anidb_series_title " +
+        "ON anidb_series(title COLLATE NOCASE);"
+    );
+
+    await db.exec(
+        "CREATE TABLE IF NOT EXISTS anidb_episodes (" +
+        "anidb_episode_id INTEGER PRIMARY KEY," +
+        "anidb_series_id INTEGER NOT NULL," +
+        "episode_number TEXT NOT NULL," +
+        "title TEXT NOT NULL," +
+        "summary TEXT," +
+        "air_date TEXT," +
+        "chronological_order REAL NOT NULL," +
+        "updated_at TEXT NOT NULL," +
+        "FOREIGN KEY (anidb_series_id) REFERENCES anidb_series(anidb_series_id) ON DELETE CASCADE" +
+        ");"
+    );
+
+    await db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_anidb_episodes_series_order " +
+        "ON anidb_episodes(anidb_series_id, chronological_order);"
+    );
+
+    await db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_anidb_episodes_series_number " +
+        "ON anidb_episodes(anidb_series_id, episode_number COLLATE NOCASE);"
+    );
+
     await db.exec(
         "CREATE TABLE IF NOT EXISTS channel_state (" +
         "id INTEGER PRIMARY KEY CHECK (id = 1)," +
@@ -81,17 +183,12 @@ export async function initDb(dbPath: string): Promise<Database> {
         ");"
     );
 
-    const channelStateColumns = await db.all<
-        Array<{ name: string }>
-    >("PRAGMA table_info(channel_state)");
-    const hasCurrentMediaRoleColumn = channelStateColumns.some(
-        (column) => column.name === "current_media_role"
+    await addColumnIfMissing(
+        db,
+        "channel_state",
+        "current_media_role",
+        "current_media_role TEXT NOT NULL DEFAULT 'episode'"
     );
-    if (!hasCurrentMediaRoleColumn) {
-        await db.exec(
-            "ALTER TABLE channel_state ADD COLUMN current_media_role TEXT NOT NULL DEFAULT 'episode'"
-        );
-    }
 
     await db.exec(
         "CREATE TABLE IF NOT EXISTS series_rotation (" +
