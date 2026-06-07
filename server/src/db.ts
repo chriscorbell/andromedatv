@@ -113,5 +113,25 @@ export async function initDb(dbPath: string): Promise<Database> {
         ");"
     );
 
+    await db.exec(
+        "CREATE TABLE IF NOT EXISTS playout_history (" +
+        "id INTEGER PRIMARY KEY AUTOINCREMENT," +
+        "media_asset_id INTEGER NOT NULL," +
+        "media_file_path TEXT NOT NULL," +
+        "media_title TEXT NOT NULL," +
+        "media_role TEXT NOT NULL CHECK (media_role IN ('episode', 'bump'))," +
+        "started_at TEXT NOT NULL," +
+        "start_offset_seconds REAL NOT NULL DEFAULT 0," +
+        "completed_at TEXT," +
+        "completion_reason TEXT," +
+        "created_at TEXT NOT NULL" +
+        ");"
+    );
+
+    await db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_playout_history_active " +
+        "ON playout_history(completed_at, started_at);"
+    );
+
     return db;
 }

@@ -10,12 +10,17 @@ import {
     loadCurrentInternalMediaAsset,
 } from "./internal-schedule";
 
+export type InternalPlayoutResumeMode = "boundary" | "wall-clock";
+
 export type InternalPlayoutDiagnostics = {
     configured: boolean;
     outputRoot: string | null;
     activeAssetPath: string | null;
     activeAssetTitle: string | null;
     activeAssetRole: string | null;
+    resumeMode: InternalPlayoutResumeMode | null;
+    resumeReason: string | null;
+    resumeOffsetSeconds: number | null;
     lastStartAt: string | null;
     lastFailureAt: string | null;
     lastFailureMessage: string | null;
@@ -27,6 +32,7 @@ export type InternalLiveHlsTranscodeRequest = {
     outputRoot: string;
     playlistPath: string;
     segmentPattern: string;
+    startOffsetSeconds: number;
 };
 
 export type InternalLiveHlsTranscodeResult = {
@@ -47,15 +53,31 @@ export type InternalPlayoutOptions = {
     now?: () => Date;
     random?: () => number;
     probeMediaAsset?: MediaProbe;
+    canSeekMediaAsset?: (mediaAsset: InternalMediaAsset) => boolean;
     transcodeLiveHls?: InternalLiveHlsTranscoder;
     logger?: Pick<Console, "info" | "warn" | "error">;
 };
 
 type ActivePlayout = {
     assetId: number;
+    historyId: number;
     outputRoot: string;
     playlistPath: string;
     process?: ChildProcess;
+};
+
+type PlayoutHistoryRow = {
+    id: number;
+    media_asset_id: number;
+    started_at: string;
+    start_offset_seconds: number;
+};
+
+type ResumeDecision = {
+    historyId?: number;
+    mode: InternalPlayoutResumeMode;
+    offsetSeconds: number;
+    reason: string;
 };
 
 const PLAYLIST_FILE_NAME = "hls.m3u8";
@@ -79,6 +101,162 @@ async function pathExists(filePath: string): Promise<boolean> {
     } catch {
         return false;
     }
+}
+
+function getCurrentDate(options: InternalPlayoutOptions): Date {
+    return options.now ? options.now() : new Date();
+}
+
+function normalizeResumeOffset(seconds: number): number {
+    if (!Number.isFinite(seconds) || seconds <= 0) {
+        return 0;
+    }
+
+    return Math.floor(seconds);
+}
+
+function formatFfmpegSeconds(seconds: number): string {
+    return Math.max(0, seconds)
+        .toFixed(3)
+        .replace(/\.?0+$/, "");
+}
+
+async function loadActivePlayoutHistory(db: Database): Promise<PlayoutHistoryRow | null> {
+    const row = await db.get<PlayoutHistoryRow>(
+        "SELECT id, media_asset_id, started_at, start_offset_seconds " +
+        "FROM playout_history " +
+        "WHERE completed_at IS NULL " +
+        "ORDER BY started_at DESC, id DESC " +
+        "LIMIT 1"
+    );
+
+    return row || null;
+}
+
+function resolveResumeDecision(
+    activeHistory: PlayoutHistoryRow | null,
+    mediaAsset: InternalMediaAsset,
+    now: Date,
+    canSeekMediaAsset: (mediaAsset: InternalMediaAsset) => boolean
+): ResumeDecision {
+    if (!activeHistory) {
+        return {
+            mode: "boundary",
+            offsetSeconds: 0,
+            reason: "No active playout history was available",
+        };
+    }
+
+    if (activeHistory.media_asset_id !== mediaAsset.id) {
+        return {
+            mode: "boundary",
+            offsetSeconds: 0,
+            reason: "Active playout history pointed at a different Media Asset",
+        };
+    }
+
+    const startedAtMs = new Date(activeHistory.started_at).getTime();
+    if (!Number.isFinite(startedAtMs)) {
+        return {
+            mode: "boundary",
+            offsetSeconds: 0,
+            reason: "Active playout history had an invalid start time",
+        };
+    }
+
+    if (!Number.isFinite(mediaAsset.durationSeconds) || mediaAsset.durationSeconds <= 0) {
+        return {
+            mode: "boundary",
+            offsetSeconds: 0,
+            reason: "Current Media Asset duration was unavailable",
+        };
+    }
+
+    if (!canSeekMediaAsset(mediaAsset)) {
+        return {
+            mode: "boundary",
+            offsetSeconds: 0,
+            reason: "Current Media Asset is not seek-safe",
+        };
+    }
+
+    const elapsedSeconds = normalizeResumeOffset(
+        ((now.getTime() - startedAtMs) / 1000) +
+        Number(activeHistory.start_offset_seconds || 0)
+    );
+    if (elapsedSeconds <= 0) {
+        return {
+            historyId: activeHistory.id,
+            mode: "boundary",
+            offsetSeconds: 0,
+            reason: "Active playout was still at the current Media Asset boundary",
+        };
+    }
+
+    if (elapsedSeconds >= mediaAsset.durationSeconds) {
+        return {
+            mode: "boundary",
+            offsetSeconds: 0,
+            reason: "Elapsed wall-clock time exceeded the current Media Asset duration",
+        };
+    }
+
+    return {
+        historyId: activeHistory.id,
+        mode: "wall-clock",
+        offsetSeconds: elapsedSeconds,
+        reason: "Elapsed wall-clock time was within the current seek-safe Media Asset",
+    };
+}
+
+async function recordPlayoutStart(
+    db: Database,
+    mediaAsset: InternalMediaAsset,
+    startedAt: Date,
+    startOffsetSeconds: number
+): Promise<number> {
+    const timestamp = startedAt.toISOString();
+    await db.exec("BEGIN IMMEDIATE TRANSACTION");
+    try {
+        await db.run(
+            "UPDATE playout_history SET completed_at = ?, completion_reason = ? " +
+            "WHERE completed_at IS NULL",
+            timestamp,
+            "replaced"
+        );
+        const result = await db.run(
+            "INSERT INTO playout_history " +
+            "(media_asset_id, media_file_path, media_title, media_role, started_at, start_offset_seconds, created_at) " +
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            mediaAsset.id,
+            mediaAsset.filePath,
+            mediaAsset.title,
+            mediaAsset.role,
+            timestamp,
+            startOffsetSeconds,
+            timestamp
+        );
+        await db.exec("COMMIT");
+        return Number(result.lastID);
+    } catch (error) {
+        await db.exec("ROLLBACK");
+        throw error;
+    }
+}
+
+async function markPlayoutHistoryCompleted(
+    db: Database,
+    historyId: number,
+    completedAt: Date,
+    reason: string
+) {
+    await db.run(
+        "UPDATE playout_history SET completed_at = ?, completion_reason = ? " +
+        "WHERE id = ? AND completed_at IS NULL",
+        completedAt.toISOString(),
+        reason,
+        historyId
+    );
 }
 
 async function waitForPlaylist(playlistPath: string, process: ChildProcess) {
@@ -118,6 +296,7 @@ export async function transcodeMediaAssetToLiveHls({
     outputRoot,
     playlistPath,
     segmentPattern,
+    startOffsetSeconds,
 }: InternalLiveHlsTranscodeRequest): Promise<InternalLiveHlsTranscodeResult> {
     await fs.rm(outputRoot, { recursive: true, force: true });
     await fs.mkdir(outputRoot, { recursive: true });
@@ -127,6 +306,7 @@ export async function transcodeMediaAssetToLiveHls({
         "-loglevel",
         "warning",
         "-re",
+        ...(startOffsetSeconds > 0 ? ["-ss", formatFfmpegSeconds(startOffsetSeconds)] : []),
         "-i",
         mediaAsset.filePath,
         "-map",
@@ -172,10 +352,21 @@ export function createInternalPlayout(options: InternalPlayoutOptions) {
         lastFailureMessage: null,
         lastStartAt: null,
         outputRoot: options.hlsOutputRoot,
+        resumeMode: null,
+        resumeOffsetSeconds: null,
+        resumeReason: null,
     };
 
     async function ensureLiveHls() {
         const { mediaAsset } = await loadCurrentInternalMediaAsset(scheduleOptions(options));
+        const now = getCurrentDate(options);
+        const canSeekMediaAsset = options.canSeekMediaAsset || (() => true);
+        const resume = resolveResumeDecision(
+            await loadActivePlayoutHistory(options.db),
+            mediaAsset,
+            now,
+            canSeekMediaAsset
+        );
         const outputRoot = path.join(options.hlsOutputRoot, `asset-${mediaAsset.id}`);
         const playlistPath = path.join(outputRoot, PLAYLIST_FILE_NAME);
 
@@ -196,9 +387,17 @@ export function createInternalPlayout(options: InternalPlayoutOptions) {
                 outputRoot,
                 playlistPath,
                 segmentPattern,
+                startOffsetSeconds: resume.offsetSeconds,
             });
+            const historyId = resume.historyId || await recordPlayoutStart(
+                options.db,
+                mediaAsset,
+                now,
+                resume.offsetSeconds
+            );
             active = {
                 assetId: mediaAsset.id,
+                historyId,
                 outputRoot,
                 playlistPath: result.playlistPath,
                 process: result.process,
@@ -214,10 +413,18 @@ export function createInternalPlayout(options: InternalPlayoutOptions) {
                         ...diagnostics,
                         ffmpegPid: null,
                     };
-                    void advanceInternalPlayoutOnCompletion(
-                        scheduleOptions(options),
-                        mediaAsset
-                    ).catch((error) => {
+                    void (async () => {
+                        await markPlayoutHistoryCompleted(
+                            options.db,
+                            historyId,
+                            getCurrentDate(options),
+                            "completed"
+                        );
+                        await advanceInternalPlayoutOnCompletion(
+                            scheduleOptions(options),
+                            mediaAsset
+                        );
+                    })().catch((error) => {
                         diagnostics = {
                             ...diagnostics,
                             lastFailureAt: new Date().toISOString(),
@@ -244,7 +451,10 @@ export function createInternalPlayout(options: InternalPlayoutOptions) {
                 ffmpegPid: result.process?.pid || null,
                 lastFailureAt: null,
                 lastFailureMessage: null,
-                lastStartAt: new Date().toISOString(),
+                lastStartAt: now.toISOString(),
+                resumeMode: resume.mode,
+                resumeOffsetSeconds: resume.offsetSeconds,
+                resumeReason: resume.reason,
             };
             return active;
         } catch (error) {

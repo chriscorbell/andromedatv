@@ -287,6 +287,9 @@ export function createApp(options: CreateAppOptions) {
             lastFailureMessage: null,
             lastStartAt: null,
             outputRoot: null,
+            resumeMode: null,
+            resumeOffsetSeconds: null,
+            resumeReason: null,
         }) as InternalPlayoutDiagnostics,
     };
 

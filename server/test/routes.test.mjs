@@ -426,6 +426,138 @@ test("internal IPTV route serves generated live HLS output", async () => {
     }
 });
 
+test("internal playout resumes deterministically from persisted playout state after restart", async () => {
+    const context = await createTestContext();
+    const libraryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "andromeda-library-test-"));
+    const hlsOutputRoot = await fs.mkdtemp(path.join(os.tmpdir(), "andromeda-hls-test-"));
+
+    try {
+        const seriesRoot = path.join(libraryRoot, "series");
+        const bumpsRoot = path.join(libraryRoot, "bumps");
+        await fs.mkdir(path.join(seriesRoot, "Alpha Series"), { recursive: true });
+        await fs.mkdir(path.join(seriesRoot, "Beta Series"), { recursive: true });
+        await fs.mkdir(bumpsRoot, { recursive: true });
+        await fs.writeFile(path.join(seriesRoot, "Alpha Series", "episode-01.mp4"), "fixture");
+        await fs.writeFile(path.join(seriesRoot, "Beta Series", "episode-01.mp4"), "fixture");
+        await fs.writeFile(path.join(bumpsRoot, "01-first-bump.mp4"), "fixture");
+
+        const probeMediaAsset = async (filePath) => ({
+            durationSeconds: filePath.includes("bump") ? 30 : 1800,
+            videoCodec: "h264",
+            audioCodec: "aac",
+        });
+
+        const initialRequests = [];
+        const initialApp = createApp({
+            corsOrigin: "*",
+            db: context.db,
+            ersatzBaseUrl: new URL("http://127.0.0.1:1"),
+            jwtSecret: "test-secret",
+            serveStatic: false,
+            statusApiMode: "public",
+            internalPlayout: {
+                bumpsRoot,
+                hlsOutputRoot,
+                seriesAllowlist: ["Alpha Series", "Beta Series"],
+                seriesRoot,
+                probeMediaAsset,
+                random: () => 0,
+                now: () => new Date("2026-03-14T12:00:00.000Z"),
+                transcodeLiveHls: async ({ mediaAsset, outputRoot, startOffsetSeconds }) => {
+                    initialRequests.push({ mediaAsset, startOffsetSeconds });
+                    await fs.mkdir(outputRoot, { recursive: true });
+                    const playlistPath = path.join(outputRoot, "hls.m3u8");
+                    await fs.writeFile(
+                        playlistPath,
+                        "#EXTM3U\n#EXT-X-TARGETDURATION:4\nsegment-00001.ts\n"
+                    );
+                    await fs.writeFile(path.join(outputRoot, "segment-00001.ts"), "segment-data");
+                    return { playlistPath };
+                },
+            },
+        });
+
+        await request(initialApp)
+            .get("/iptv/session/1/hls.m3u8")
+            .expect(200);
+
+        assert.equal(initialRequests.length, 1);
+        assert.equal(initialRequests[0].mediaAsset.title, "episode-01");
+        assert.equal(initialRequests[0].startOffsetSeconds, 0);
+
+        const initialStatus = await request(initialApp)
+            .get("/api/status")
+            .expect(200);
+        assert.equal(initialStatus.body.internalPlayout.resumeMode, "boundary");
+        assert.equal(initialStatus.body.internalPlayout.resumeOffsetSeconds, 0);
+
+        const persistedRotation = await context.db.all(
+            "SELECT position, series_title FROM series_rotation ORDER BY position"
+        );
+        const persistedCursors = await context.db.all(
+            "SELECT series_title, episode_index FROM episode_cursors ORDER BY series_title"
+        );
+
+        const restartRequests = [];
+        const restartApp = createApp({
+            corsOrigin: "*",
+            db: context.db,
+            ersatzBaseUrl: new URL("http://127.0.0.1:1"),
+            jwtSecret: "test-secret",
+            serveStatic: false,
+            statusApiMode: "public",
+            internalPlayout: {
+                bumpsRoot,
+                hlsOutputRoot,
+                seriesAllowlist: ["Alpha Series", "Beta Series"],
+                seriesRoot,
+                probeMediaAsset,
+                random: () => {
+                    throw new Error("restart must not reshuffle channel state");
+                },
+                now: () => new Date("2026-03-14T12:05:00.000Z"),
+                transcodeLiveHls: async ({ mediaAsset, outputRoot, startOffsetSeconds }) => {
+                    restartRequests.push({ mediaAsset, startOffsetSeconds });
+                    await fs.mkdir(outputRoot, { recursive: true });
+                    const playlistPath = path.join(outputRoot, "hls.m3u8");
+                    await fs.writeFile(
+                        playlistPath,
+                        "#EXTM3U\n#EXT-X-TARGETDURATION:4\nsegment-00001.ts\n"
+                    );
+                    await fs.writeFile(path.join(outputRoot, "segment-00001.ts"), "segment-data");
+                    return { playlistPath };
+                },
+            },
+        });
+
+        await request(restartApp)
+            .get("/iptv/session/1/hls.m3u8")
+            .expect(200);
+
+        assert.equal(restartRequests.length, 1);
+        assert.equal(restartRequests[0].mediaAsset.title, "episode-01");
+        assert.equal(restartRequests[0].startOffsetSeconds, 300);
+        assert.deepEqual(
+            await context.db.all("SELECT position, series_title FROM series_rotation ORDER BY position"),
+            persistedRotation
+        );
+        assert.deepEqual(
+            await context.db.all("SELECT series_title, episode_index FROM episode_cursors ORDER BY series_title"),
+            persistedCursors
+        );
+
+        const restartStatus = await request(restartApp)
+            .get("/api/status")
+            .expect(200);
+        assert.equal(restartStatus.body.internalPlayout.resumeMode, "wall-clock");
+        assert.equal(restartStatus.body.internalPlayout.resumeOffsetSeconds, 300);
+    } finally {
+        await fs.rm(libraryRoot, { recursive: true, force: true });
+        await fs.rm(hlsOutputRoot, { recursive: true, force: true });
+        await context.cleanup();
+    }
+});
+
 test("internal playout advances schedule only after confirmed media completion", async () => {
     const context = await createTestContext();
     const libraryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "andromeda-library-test-"));
