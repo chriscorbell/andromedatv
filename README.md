@@ -103,6 +103,24 @@ The admin bootstrap only runs when there are no admin users in the database. Aft
 
 Set `PLAYOUT_MODE=internal` to serve `/api/schedule` from the internal schedule preview and `/iptv/session/1/hls.m3u8` from AndromedaTV-owned Live HLS output. In internal mode, AndromedaTV scans `ANDROMEDA_SERIES_ROOT` for allowlisted Episode Assets, scans `ANDROMEDA_BUMPS_ROOT` for filename-sorted Bump Assets, persists discovered media facts and first Channel State in SQLite, starts ffmpeg HLS output for the current Media Asset under `INTERNAL_HLS_OUTPUT_ROOT`, and reports scanner/playout diagnostics through `/api/status`. `ERSATZTV_BASE_URL` is still required for the legacy ErsatzTV proxy mode.
 
+#### One-time Jellyfin metadata seed
+
+Before the first internal production run, operators may seed AndromedaTV's AniDB Metadata Cache from the existing Jellyfin database at `/docker/data/jellyfin/config/data/jellyfin.db`. This is an offline maintenance command; normal app startup, schedule scans, and live playout never invoke Jellyfin.
+
+From a development checkout:
+
+```bash
+bun run --cwd server seed:jellyfin-metadata -- --jellyfin-db /docker/data/jellyfin/config/data/jellyfin.db --db /data/andromeda.db
+```
+
+From a built container or image, run the compiled command with both the AndromedaTV data volume and the Jellyfin config directory mounted:
+
+```bash
+node /app/server/dist/scripts/seed-anidb-from-jellyfin.js --jellyfin-db /docker/data/jellyfin/config/data/jellyfin.db --db /data/andromeda.db
+```
+
+The command reads Jellyfin `BaseItems` and `BaseItemProviders` rows with AniDB provider IDs, upserts them into `anidb_series` and `anidb_episodes`, and marks the cache rows successful. If the Jellyfin database path is missing or unreadable, the command exits non-zero and leaves normal AndromedaTV startup unchanged. After a successful seed, AndromedaTV can run with only its SQLite database and media Library mounted.
+
 `TRANSCODE_ACCEL` controls the Live HLS transcode path:
 
 - `disabled`: CPU-only `libx264` output. This is the default for development and automated tests.
