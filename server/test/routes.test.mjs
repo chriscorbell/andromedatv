@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import fs from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import { PassThrough } from "node:stream";
 import test from "node:test";
 
 import request from "supertest";
@@ -67,6 +69,21 @@ async function createAdminAgent(context) {
     assert.equal(loginResponse.body.token, undefined);
 
     return agent;
+}
+
+class FakePlayoutProcess extends EventEmitter {
+    constructor(pid) {
+        super();
+        this.killed = false;
+        this.pid = pid;
+        this.stderr = new PassThrough();
+    }
+
+    kill(signal = "SIGTERM") {
+        this.killed = true;
+        this.emit("exit", null, signal);
+        return true;
+    }
 }
 
 test("register/login sets a session cookie and authorizes the message history route", async () => {
@@ -402,6 +419,162 @@ test("internal IPTV route serves generated live HLS output", async () => {
 
         assert.equal(segmentResponse.status, 200);
         assert.equal(Buffer.from(segmentResponse.body).toString("utf8"), "segment-data");
+    } finally {
+        await fs.rm(libraryRoot, { recursive: true, force: true });
+        await fs.rm(hlsOutputRoot, { recursive: true, force: true });
+        await context.cleanup();
+    }
+});
+
+test("internal playout advances schedule only after confirmed media completion", async () => {
+    const context = await createTestContext();
+    const libraryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "andromeda-library-test-"));
+    const hlsOutputRoot = await fs.mkdtemp(path.join(os.tmpdir(), "andromeda-hls-test-"));
+
+    try {
+        const seriesRoot = path.join(libraryRoot, "series");
+        const bumpsRoot = path.join(libraryRoot, "bumps");
+        await fs.mkdir(path.join(seriesRoot, "Alpha Series"), { recursive: true });
+        await fs.mkdir(path.join(seriesRoot, "Beta Series"), { recursive: true });
+        await fs.mkdir(bumpsRoot, { recursive: true });
+        await fs.writeFile(path.join(seriesRoot, "Alpha Series", "episode-01.mp4"), "fixture");
+        await fs.writeFile(path.join(seriesRoot, "Alpha Series", "episode-02.mp4"), "fixture");
+        await fs.writeFile(path.join(seriesRoot, "Beta Series", "episode-01.mp4"), "fixture");
+        await fs.writeFile(path.join(bumpsRoot, "01-first-bump.mp4"), "fixture");
+        await fs.writeFile(path.join(bumpsRoot, "02-second-bump.mp4"), "fixture");
+
+        const transcodeRequests = [];
+        const playoutProcesses = [];
+        const randomValues = [0.999, 0, 0];
+        const app = createApp({
+            corsOrigin: "*",
+            db: context.db,
+            ersatzBaseUrl: new URL("http://127.0.0.1:1"),
+            jwtSecret: "test-secret",
+            serveStatic: false,
+            statusApiMode: "public",
+            internalSchedule: {
+                bumpsRoot,
+                seriesAllowlist: ["Alpha Series", "Beta Series"],
+                seriesRoot,
+                probeMediaAsset: async (filePath) => ({
+                    durationSeconds: filePath.includes("bump") ? 30 : 1800,
+                    videoCodec: "h264",
+                    audioCodec: "aac",
+                }),
+                random: () => randomValues.shift() ?? 0,
+                now: () => new Date("2026-03-14T12:00:00.000Z"),
+            },
+            internalPlayout: {
+                bumpsRoot,
+                hlsOutputRoot,
+                seriesAllowlist: ["Alpha Series", "Beta Series"],
+                seriesRoot,
+                probeMediaAsset: async (filePath) => ({
+                    durationSeconds: filePath.includes("bump") ? 30 : 1800,
+                    videoCodec: "h264",
+                    audioCodec: "aac",
+                }),
+                random: () => randomValues.shift() ?? 0,
+                now: () => new Date("2026-03-14T12:00:00.000Z"),
+                transcodeLiveHls: async ({ mediaAsset, outputRoot }) => {
+                    const process = new FakePlayoutProcess(10_000 + playoutProcesses.length);
+                    transcodeRequests.push(mediaAsset);
+                    playoutProcesses.push(process);
+                    await fs.mkdir(outputRoot, { recursive: true });
+                    const playlistPath = path.join(outputRoot, "hls.m3u8");
+                    await fs.writeFile(
+                        playlistPath,
+                        "#EXTM3U\n#EXT-X-TARGETDURATION:4\nsegment-00001.ts\n"
+                    );
+                    await fs.writeFile(path.join(outputRoot, "segment-00001.ts"), "segment-data");
+                    return { playlistPath, process };
+                },
+            },
+        });
+
+        async function currentScheduleTitles() {
+            const response = await request(app)
+                .get("/api/schedule");
+
+            assert.equal(response.status, 200);
+            return response.body.schedule.map((item) => item.title);
+        }
+
+        async function completeCurrentAsset(expectedTitle) {
+            const response = await request(app)
+                .get("/iptv/session/1/hls.m3u8");
+
+            assert.equal(response.status, 200);
+            assert.equal(transcodeRequests.at(-1)?.title, expectedTitle);
+            playoutProcesses.at(-1).emit("exit", 0, null);
+            await wait(25);
+        }
+
+        assert.deepEqual(
+            (await currentScheduleTitles()).slice(0, 4),
+            ["Alpha Series", "01-first-bump", "Beta Series", "02-second-bump"]
+        );
+        assert.deepEqual(
+            (await currentScheduleTitles()).slice(0, 2),
+            ["Alpha Series", "01-first-bump"]
+        );
+
+        await completeCurrentAsset("episode-01");
+        assert.deepEqual(
+            (await currentScheduleTitles()).slice(0, 3),
+            ["01-first-bump", "Beta Series", "02-second-bump"]
+        );
+
+        await completeCurrentAsset("01-first-bump");
+        assert.deepEqual(
+            (await currentScheduleTitles()).slice(0, 4),
+            ["Beta Series", "02-second-bump", "Alpha Series", "01-first-bump"]
+        );
+        assert.deepEqual(
+            await context.db.all(
+                "SELECT current_rotation_index, bump_cursor, current_media_role FROM channel_state"
+            ),
+            [{ current_rotation_index: 1, bump_cursor: 1, current_media_role: "episode" }]
+        );
+        assert.deepEqual(
+            await context.db.all(
+                "SELECT series_title, episode_index FROM episode_cursors ORDER BY series_title"
+            ),
+            [
+                { series_title: "Alpha Series", episode_index: 1 },
+                { series_title: "Beta Series", episode_index: 0 },
+            ]
+        );
+
+        await completeCurrentAsset("episode-01");
+        await completeCurrentAsset("02-second-bump");
+        assert.deepEqual(
+            (await currentScheduleTitles()).slice(0, 3),
+            ["Alpha Series", "01-first-bump", "Beta Series"]
+        );
+        assert.deepEqual(
+            await context.db.all(
+                "SELECT current_rotation_index, bump_cursor, current_media_role FROM channel_state"
+            ),
+            [{ current_rotation_index: 0, bump_cursor: 0, current_media_role: "episode" }]
+        );
+
+        await completeCurrentAsset("episode-02");
+        await completeCurrentAsset("01-first-bump");
+        assert.deepEqual(
+            (await currentScheduleTitles()).slice(0, 3),
+            ["Beta Series", "02-second-bump", "Alpha Series"]
+        );
+        assert.deepEqual(
+            await context.db.all(
+                "SELECT series_title, episode_index FROM episode_cursors ORDER BY series_title"
+            ),
+            [
+                { series_title: "Alpha Series", episode_index: 0 },
+                { series_title: "Beta Series", episode_index: 0 },
+            ]
+        );
     } finally {
         await fs.rm(libraryRoot, { recursive: true, force: true });
         await fs.rm(hlsOutputRoot, { recursive: true, force: true });

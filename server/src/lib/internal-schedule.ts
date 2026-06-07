@@ -74,11 +74,23 @@ type ChannelStateRow = {
     id: number;
     current_rotation_index: number;
     bump_cursor: number;
+    current_media_role: MediaRole;
 };
 
 type EpisodeCursorRow = {
     series_title: string;
     episode_index: number;
+};
+
+type SeriesRotationRow = {
+    series_title: string;
+};
+
+type PlayoutCursor = {
+    bumpCursor: number;
+    currentMediaRole: MediaRole;
+    episodeCursorsBySeries: Map<string, number>;
+    rotationIndex: number;
 };
 
 export type InternalMediaAsset = {
@@ -308,9 +320,13 @@ async function persistMediaAssets(db: Database, assets: ScannedAsset[], now: Dat
     }
 }
 
-async function ensureChannelState(db: Database, random: () => number, now: Date) {
+async function ensureChannelState(
+    db: Database,
+    random: () => number,
+    now: Date
+): Promise<ChannelStateRow> {
     const existingState = await db.get<ChannelStateRow>(
-        "SELECT id, current_rotation_index, bump_cursor FROM channel_state WHERE id = 1"
+        "SELECT id, current_rotation_index, bump_cursor, current_media_role FROM channel_state WHERE id = 1"
     );
     if (existingState) {
         const rotationCount = await db.get<{ count: number }>(
@@ -325,8 +341,8 @@ async function ensureChannelState(db: Database, random: () => number, now: Date)
     const timestamp = now.toISOString();
 
     await db.run(
-        "INSERT INTO channel_state (id, current_rotation_index, bump_cursor, created_at, updated_at) " +
-        "VALUES (1, 0, 0, ?, ?)",
+        "INSERT INTO channel_state (id, current_rotation_index, bump_cursor, current_media_role, created_at, updated_at) " +
+        "VALUES (1, 0, 0, 'episode', ?, ?)",
         timestamp,
         timestamp
     );
@@ -337,6 +353,7 @@ async function ensureChannelState(db: Database, random: () => number, now: Date)
         id: 1,
         current_rotation_index: 0,
         bump_cursor: 0,
+        current_media_role: "episode",
     };
 }
 
@@ -417,6 +434,136 @@ function buildDiagnostics(
     };
 }
 
+function normalizeIndex(index: number, length: number): number {
+    if (length <= 0) {
+        return 0;
+    }
+    return ((index % length) + length) % length;
+}
+
+function groupEpisodesBySeries(episodes: MediaAssetRow[]) {
+    const episodesBySeries = new Map<string, MediaAssetRow[]>();
+    for (const episode of episodes) {
+        if (!episode.series_title) {
+            continue;
+        }
+        const list = episodesBySeries.get(episode.series_title) || [];
+        list.push(episode);
+        episodesBySeries.set(episode.series_title, list);
+    }
+    return episodesBySeries;
+}
+
+function createPlayoutCursor(
+    state: ChannelStateRow,
+    cursorRows: EpisodeCursorRow[]
+): PlayoutCursor {
+    return {
+        bumpCursor: state.bump_cursor,
+        currentMediaRole: state.current_media_role === "bump" ? "bump" : "episode",
+        episodeCursorsBySeries: new Map(
+            cursorRows.map((row) => [row.series_title, row.episode_index])
+        ),
+        rotationIndex: state.current_rotation_index,
+    };
+}
+
+function resolveCurrentEpisode(
+    cursor: PlayoutCursor,
+    rotationRows: SeriesRotationRow[],
+    episodesBySeries: Map<string, MediaAssetRow[]>
+): MediaAssetRow | null {
+    const rotationRow = rotationRows[normalizeIndex(cursor.rotationIndex, rotationRows.length)];
+    const seriesTitle = rotationRow?.series_title;
+    if (!seriesTitle) {
+        return null;
+    }
+
+    const seriesEpisodes = episodesBySeries.get(seriesTitle) || [];
+    if (seriesEpisodes.length === 0) {
+        return null;
+    }
+
+    const episodeCursor = cursor.episodeCursorsBySeries.get(seriesTitle) || 0;
+    return seriesEpisodes[normalizeIndex(episodeCursor, seriesEpisodes.length)] || null;
+}
+
+function resolveCurrentAsset(
+    cursor: PlayoutCursor,
+    rotationRows: SeriesRotationRow[],
+    episodesBySeries: Map<string, MediaAssetRow[]>,
+    bumps: MediaAssetRow[]
+): MediaAssetRow | null {
+    if (cursor.currentMediaRole === "bump" && bumps.length > 0) {
+        return bumps[normalizeIndex(cursor.bumpCursor, bumps.length)] || null;
+    }
+
+    const episode = resolveCurrentEpisode(cursor, rotationRows, episodesBySeries);
+    if (episode) {
+        return episode;
+    }
+
+    if (bumps.length > 0) {
+        return bumps[normalizeIndex(cursor.bumpCursor, bumps.length)] || null;
+    }
+
+    return null;
+}
+
+function advanceCurrentSeriesCursor(
+    cursor: PlayoutCursor,
+    rotationRows: SeriesRotationRow[],
+    episodesBySeries: Map<string, MediaAssetRow[]>
+) {
+    const rotationRow = rotationRows[normalizeIndex(cursor.rotationIndex, rotationRows.length)];
+    const seriesTitle = rotationRow?.series_title;
+    if (seriesTitle) {
+        const seriesEpisodes = episodesBySeries.get(seriesTitle) || [];
+        if (seriesEpisodes.length > 0) {
+            const episodeCursor = cursor.episodeCursorsBySeries.get(seriesTitle) || 0;
+            cursor.episodeCursorsBySeries.set(
+                seriesTitle,
+                normalizeIndex(episodeCursor + 1, seriesEpisodes.length)
+            );
+        }
+    }
+
+    if (rotationRows.length > 0) {
+        cursor.rotationIndex = normalizeIndex(cursor.rotationIndex + 1, rotationRows.length);
+    }
+}
+
+function advancePlayoutCursor(
+    cursor: PlayoutCursor,
+    completedAsset: MediaAssetRow,
+    rotationRows: SeriesRotationRow[],
+    episodesBySeries: Map<string, MediaAssetRow[]>,
+    bumps: MediaAssetRow[]
+) {
+    if (completedAsset.role === "episode" && bumps.length > 0) {
+        cursor.currentMediaRole = "bump";
+        return;
+    }
+
+    advanceCurrentSeriesCursor(cursor, rotationRows, episodesBySeries);
+    if (completedAsset.role === "bump" && bumps.length > 0) {
+        cursor.bumpCursor = normalizeIndex(cursor.bumpCursor + 1, bumps.length);
+    }
+    cursor.currentMediaRole = "episode";
+}
+
+async function loadRotationRows(db: Database) {
+    return await db.all<Array<SeriesRotationRow>>(
+        "SELECT series_title FROM series_rotation WHERE channel_state_id = 1 ORDER BY position"
+    );
+}
+
+async function loadCursorRows(db: Database) {
+    return await db.all<Array<EpisodeCursorRow>>(
+        "SELECT series_title, episode_index FROM episode_cursors WHERE channel_state_id = 1"
+    );
+}
+
 export async function loadCurrentInternalMediaAsset(
     options: InternalScheduleOptions
 ): Promise<{ mediaAsset: InternalMediaAsset; diagnostics: InternalScheduleDiagnostics }> {
@@ -426,44 +573,81 @@ export async function loadCurrentInternalMediaAsset(
     await persistMediaAssets(options.db, scan.assets, now);
     const state = await ensureChannelState(options.db, random, now);
     const { episodes, bumps } = await loadScheduleAssets(options.db);
-    const rotationRow = await options.db.get<{ series_title: string }>(
-        "SELECT series_title FROM series_rotation WHERE channel_state_id = 1 AND position = ?",
-        state.current_rotation_index
+    const rotationRows = await loadRotationRows(options.db);
+    const cursorRows = await loadCursorRows(options.db);
+    const cursor = createPlayoutCursor(state, cursorRows);
+    const currentAsset = resolveCurrentAsset(
+        cursor,
+        rotationRows,
+        groupEpisodesBySeries(episodes),
+        bumps
     );
+    const mediaAsset = currentAsset ? toInternalMediaAsset(currentAsset) : null;
 
-    if (rotationRow) {
-        const seriesEpisodes = episodes.filter(
-            (episode) => episode.series_title === rotationRow.series_title
-        );
-        const cursorRow = await options.db.get<{ episode_index: number }>(
-            "SELECT episode_index FROM episode_cursors WHERE channel_state_id = 1 AND series_title = ?",
-            rotationRow.series_title
-        );
-        if (seriesEpisodes.length > 0) {
-            const cursor = cursorRow?.episode_index || 0;
-            const mediaAsset = toInternalMediaAsset(
-                seriesEpisodes[cursor % seriesEpisodes.length]
-            );
-            if (mediaAsset) {
-                return {
-                    diagnostics: buildDiagnostics(options, scan, now),
-                    mediaAsset,
-                };
-            }
-        }
-    }
-
-    if (bumps.length > 0) {
-        const mediaAsset = toInternalMediaAsset(bumps[state.bump_cursor % bumps.length]);
-        if (mediaAsset) {
-            return {
-                diagnostics: buildDiagnostics(options, scan, now),
-                mediaAsset,
-            };
-        }
+    if (mediaAsset) {
+        return {
+            diagnostics: buildDiagnostics(options, scan, now),
+            mediaAsset,
+        };
     }
 
     throw new Error("No current internal media asset is available");
+}
+
+export async function advanceInternalPlayoutOnCompletion(
+    options: InternalScheduleOptions,
+    completedMediaAsset: InternalMediaAsset
+): Promise<boolean> {
+    const now = options.now ? options.now() : new Date();
+    const random = options.random || Math.random;
+    const scan = await scanInternalLibrary(options);
+    await persistMediaAssets(options.db, scan.assets, now);
+    const state = await ensureChannelState(options.db, random, now);
+    const { episodes, bumps } = await loadScheduleAssets(options.db);
+    const rotationRows = await loadRotationRows(options.db);
+    const cursorRows = await loadCursorRows(options.db);
+    const episodesBySeries = groupEpisodesBySeries(episodes);
+    const cursor = createPlayoutCursor(state, cursorRows);
+    const currentAsset = resolveCurrentAsset(cursor, rotationRows, episodesBySeries, bumps);
+    const currentMediaAsset = currentAsset ? toInternalMediaAsset(currentAsset) : null;
+
+    if (!currentAsset || !currentMediaAsset || currentMediaAsset.id !== completedMediaAsset.id) {
+        return false;
+    }
+
+    advancePlayoutCursor(cursor, currentAsset, rotationRows, episodesBySeries, bumps);
+
+    await options.db.exec("BEGIN IMMEDIATE TRANSACTION");
+    try {
+        await options.db.run(
+            "UPDATE channel_state SET " +
+            "current_rotation_index = ?, " +
+            "bump_cursor = ?, " +
+            "current_media_role = ?, " +
+            "updated_at = ? " +
+            "WHERE id = 1",
+            cursor.rotationIndex,
+            cursor.bumpCursor,
+            cursor.currentMediaRole,
+            now.toISOString()
+        );
+
+        for (const [seriesTitle, episodeIndex] of cursor.episodeCursorsBySeries) {
+            await options.db.run(
+                "UPDATE episode_cursors SET episode_index = ? " +
+                "WHERE channel_state_id = 1 AND series_title = ?",
+                episodeIndex,
+                seriesTitle
+            );
+        }
+
+        await options.db.exec("COMMIT");
+    } catch (error) {
+        await options.db.exec("ROLLBACK");
+        throw error;
+    }
+
+    return true;
 }
 
 export async function loadInternalSchedulePayload(
@@ -475,65 +659,30 @@ export async function loadInternalSchedulePayload(
     await persistMediaAssets(options.db, scan.assets, now);
     const state = await ensureChannelState(options.db, random, now);
     const { episodes, bumps } = await loadScheduleAssets(options.db);
-    const rotationRows = await options.db.all<Array<{ series_title: string }>>(
-        "SELECT series_title FROM series_rotation WHERE channel_state_id = 1 ORDER BY position"
-    );
-    const cursorRows = await options.db.all<Array<EpisodeCursorRow>>(
-        "SELECT series_title, episode_index FROM episode_cursors WHERE channel_state_id = 1"
-    );
-
-    const episodesBySeries = new Map<string, MediaAssetRow[]>();
-    for (const episode of episodes) {
-        if (!episode.series_title) {
-            continue;
-        }
-        const list = episodesBySeries.get(episode.series_title) || [];
-        list.push(episode);
-        episodesBySeries.set(episode.series_title, list);
-    }
-
-    const cursorsBySeries = new Map(
-        cursorRows.map((row) => [row.series_title, row.episode_index])
-    );
-    const seriesUseCounts = new Map<string, number>();
+    const rotationRows = await loadRotationRows(options.db);
+    const cursorRows = await loadCursorRows(options.db);
+    const episodesBySeries = groupEpisodesBySeries(episodes);
+    const cursor = createPlayoutCursor(state, cursorRows);
     const schedule = [];
     let cursorTime = now;
-    let bumpUseCount = 0;
 
-    for (let rotationAdvance = 0; schedule.length < 25 && rotationRows.length > 0; rotationAdvance += 1) {
-        const rotationIndex = (state.current_rotation_index + rotationAdvance) % rotationRows.length;
-        const seriesTitle = rotationRows[rotationIndex]?.series_title;
-        const seriesEpisodes = seriesTitle ? episodesBySeries.get(seriesTitle) || [] : [];
-        if (seriesTitle && seriesEpisodes.length > 0) {
-            const seriesUseCount = seriesUseCounts.get(seriesTitle) || 0;
-            const episodeCursor = cursorsBySeries.get(seriesTitle) || 0;
-            const episode = seriesEpisodes[(episodeCursor + seriesUseCount) % seriesEpisodes.length];
-            const stopAt = addSeconds(cursorTime, episode.duration_seconds || 0);
-            schedule.push({
-                episode: episode.title,
-                live: schedule.length === 0,
-                startAt: cursorTime.toISOString(),
-                stopAt: stopAt.toISOString(),
-                ...(schedule.length === 0 ? { time: "live" } : {}),
-                title: seriesTitle,
-            });
-            cursorTime = stopAt;
-            seriesUseCounts.set(seriesTitle, seriesUseCount + 1);
+    while (schedule.length < 25) {
+        const asset = resolveCurrentAsset(cursor, rotationRows, episodesBySeries, bumps);
+        if (!asset) {
+            break;
         }
 
-        if (schedule.length < 25 && bumps.length > 0) {
-            const bump = bumps[(state.bump_cursor + bumpUseCount) % bumps.length];
-            const stopAt = addSeconds(cursorTime, bump.duration_seconds || 0);
-            schedule.push({
-                live: schedule.length === 0,
-                startAt: cursorTime.toISOString(),
-                stopAt: stopAt.toISOString(),
-                ...(schedule.length === 0 ? { time: "live" } : {}),
-                title: bump.title,
-            });
-            cursorTime = stopAt;
-            bumpUseCount += 1;
-        }
+        const stopAt = addSeconds(cursorTime, asset.duration_seconds || 0);
+        schedule.push({
+            ...(asset.role === "episode" ? { episode: asset.title } : {}),
+            live: schedule.length === 0,
+            startAt: cursorTime.toISOString(),
+            stopAt: stopAt.toISOString(),
+            ...(schedule.length === 0 ? { time: "live" } : {}),
+            title: asset.role === "episode" && asset.series_title ? asset.series_title : asset.title,
+        });
+        cursorTime = stopAt;
+        advancePlayoutCursor(cursor, asset, rotationRows, episodesBySeries, bumps);
     }
 
     return {

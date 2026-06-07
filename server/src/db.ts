@@ -75,10 +75,23 @@ export async function initDb(dbPath: string): Promise<Database> {
         "id INTEGER PRIMARY KEY CHECK (id = 1)," +
         "current_rotation_index INTEGER NOT NULL DEFAULT 0," +
         "bump_cursor INTEGER NOT NULL DEFAULT 0," +
+        "current_media_role TEXT NOT NULL DEFAULT 'episode' CHECK (current_media_role IN ('episode', 'bump'))," +
         "created_at TEXT NOT NULL," +
         "updated_at TEXT NOT NULL" +
         ");"
     );
+
+    const channelStateColumns = await db.all<
+        Array<{ name: string }>
+    >("PRAGMA table_info(channel_state)");
+    const hasCurrentMediaRoleColumn = channelStateColumns.some(
+        (column) => column.name === "current_media_role"
+    );
+    if (!hasCurrentMediaRoleColumn) {
+        await db.exec(
+            "ALTER TABLE channel_state ADD COLUMN current_media_role TEXT NOT NULL DEFAULT 'episode'"
+        );
+    }
 
     await db.exec(
         "CREATE TABLE IF NOT EXISTS series_rotation (" +

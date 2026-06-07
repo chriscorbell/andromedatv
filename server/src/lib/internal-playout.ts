@@ -3,6 +3,7 @@ import fs from "fs/promises";
 import path from "path";
 import type { Database } from "sqlite";
 import {
+    advanceInternalPlayoutOnCompletion,
     InternalMediaAsset,
     InternalScheduleOptions,
     MediaProbe,
@@ -203,9 +204,31 @@ export function createInternalPlayout(options: InternalPlayoutOptions) {
                 process: result.process,
             };
             result.process?.once("exit", (code, signal) => {
-                if (active?.assetId !== mediaAsset.id || code === 0) {
+                if (active?.assetId !== mediaAsset.id) {
                     return;
                 }
+
+                if (code === 0) {
+                    active = null;
+                    diagnostics = {
+                        ...diagnostics,
+                        ffmpegPid: null,
+                    };
+                    void advanceInternalPlayoutOnCompletion(
+                        scheduleOptions(options),
+                        mediaAsset
+                    ).catch((error) => {
+                        diagnostics = {
+                            ...diagnostics,
+                            lastFailureAt: new Date().toISOString(),
+                            lastFailureMessage: error instanceof Error
+                                ? error.message
+                                : String(error),
+                        };
+                    });
+                    return;
+                }
+
                 diagnostics = {
                     ...diagnostics,
                     ffmpegPid: null,
