@@ -86,6 +86,19 @@ class FakePlayoutProcess extends EventEmitter {
     }
 }
 
+function getHttpStatus(url) {
+    return new Promise((resolve, reject) => {
+        const req = http.get(url, (res) => {
+            res.resume();
+            res.on("end", () => {
+                resolve(res.statusCode);
+            });
+            res.on("error", reject);
+        });
+        req.on("error", reject);
+    });
+}
+
 test("register/login sets a session cookie and authorizes the message history route", async () => {
     const context = await createTestContext();
 
@@ -420,6 +433,104 @@ test("internal IPTV route serves generated live HLS output", async () => {
         assert.equal(segmentResponse.status, 200);
         assert.equal(Buffer.from(segmentResponse.body).toString("utf8"), "segment-data");
     } finally {
+        await fs.rm(libraryRoot, { recursive: true, force: true });
+        await fs.rm(hlsOutputRoot, { recursive: true, force: true });
+        await context.cleanup();
+    }
+});
+
+test("internal schedule and IPTV routes can initialize channel state concurrently", async () => {
+    const context = await createTestContext();
+    const libraryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "andromeda-library-test-"));
+    const hlsOutputRoot = await fs.mkdtemp(path.join(os.tmpdir(), "andromeda-hls-test-"));
+    let server = null;
+
+    try {
+        const seriesRoot = path.join(libraryRoot, "series");
+        const bumpsRoot = path.join(libraryRoot, "bumps");
+        await fs.mkdir(path.join(seriesRoot, "Acceptance Series"), { recursive: true });
+        await fs.mkdir(bumpsRoot, { recursive: true });
+        await fs.writeFile(path.join(seriesRoot, "Acceptance Series", "episode-01.mp4"), "fixture");
+        await fs.writeFile(path.join(bumpsRoot, "01-bump.mp4"), "fixture");
+
+        const internalOptions = {
+            bumpsRoot,
+            seriesAllowlist: ["Acceptance Series"],
+            seriesRoot,
+            probeMediaAsset: async (filePath) => {
+                await wait(5);
+                return {
+                    durationSeconds: filePath.includes("bump") ? 30 : 1800,
+                    videoCodec: "h264",
+                    audioCodec: "aac",
+                };
+            },
+            random: () => 0,
+            now: () => new Date("2026-03-14T12:00:00.000Z"),
+        };
+        const app = createApp({
+            corsOrigin: "*",
+            db: context.db,
+            ersatzBaseUrl: new URL("http://127.0.0.1:1"),
+            jwtSecret: "test-secret",
+            serveStatic: false,
+            statusApiMode: "public",
+            internalSchedule: internalOptions,
+            internalPlayout: {
+                ...internalOptions,
+                hlsOutputRoot,
+                transcodeLiveHls: async ({ outputRoot }) => {
+                    await fs.mkdir(outputRoot, { recursive: true });
+                    const playlistPath = path.join(outputRoot, "hls.m3u8");
+                    await fs.writeFile(
+                        playlistPath,
+                        "#EXTM3U\n#EXT-X-TARGETDURATION:4\nsegment-00001.ts\n"
+                    );
+                    await fs.writeFile(path.join(outputRoot, "segment-00001.ts"), "segment-data");
+                    return { playlistPath };
+                },
+            },
+        });
+
+        server = http.createServer(app);
+        await new Promise((resolve) => {
+            server.listen(0, "127.0.0.1", resolve);
+        });
+        const address = server.address();
+        assert.ok(address && typeof address === "object");
+        const baseUrl = `http://127.0.0.1:${address.port}`;
+
+        const statuses = await Promise.all([
+            getHttpStatus(`${baseUrl}/api/schedule`),
+            getHttpStatus(`${baseUrl}/iptv/session/1/hls.m3u8`),
+            getHttpStatus(`${baseUrl}/api/schedule`),
+            getHttpStatus(`${baseUrl}/iptv/session/1/hls.m3u8`),
+        ]);
+
+        assert.deepEqual(
+            statuses,
+            [200, 200, 200, 200]
+        );
+        assert.deepEqual(
+            await context.db.all("SELECT id, current_rotation_index, bump_cursor FROM channel_state"),
+            [{ id: 1, current_rotation_index: 0, bump_cursor: 0 }]
+        );
+        assert.deepEqual(
+            await context.db.all("SELECT position, series_title FROM series_rotation"),
+            [{ position: 0, series_title: "Acceptance Series" }]
+        );
+    } finally {
+        if (server) {
+            await new Promise((resolve, reject) => {
+                server.close((error) => {
+                    if (error) {
+                        reject(error);
+                        return;
+                    }
+                    resolve();
+                });
+            });
+        }
         await fs.rm(libraryRoot, { recursive: true, force: true });
         await fs.rm(hlsOutputRoot, { recursive: true, force: true });
         await context.cleanup();

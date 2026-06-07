@@ -13,12 +13,6 @@ export default defineConfig({
   },
   webServer: [
     {
-      command: 'node tests/e2e/mock-ersatztv.mjs',
-      url: 'http://127.0.0.1:8409/health',
-      reuseExistingServer: !process.env.CI,
-      timeout: 30_000,
-    },
-    {
       command: 'node tests/e2e/start-app.mjs',
       url: `${baseURL}/health`,
       reuseExistingServer: !process.env.CI,

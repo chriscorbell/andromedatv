@@ -6,12 +6,77 @@ test('homepage loads and expanded schedule details are visible', async ({ page }
   await expect(page.getByRole('img', { name: 'andromeda' })).toBeVisible()
   await expect(page.getByText('schedule')).toBeVisible()
 
-  const angelCopButton = page.getByRole('button', { name: /angel cop/i })
-  await expect(angelCopButton).toBeVisible()
-  await angelCopButton.click()
+  const acceptanceSeriesButton = page.getByRole('button', {
+    name: /acceptance series/i,
+  })
+  await expect(acceptanceSeriesButton).toBeVisible()
+  await acceptanceSeriesButton.click()
 
-  await expect(page.getByText('S01E02 The Beginning')).toBeVisible()
-  await expect(page.getByText('Pilot & more')).toBeVisible()
+  await expect(page.getByText('episode-01')).toBeVisible()
+})
+
+test('internal playback acceptance uses the generated schedule and HLS route', async ({
+  page,
+  request,
+}) => {
+  const hlsResponsePromise = page.waitForResponse((response) => {
+    return (
+      response.url().includes('/iptv/session/1/hls.m3u8') &&
+      response.status() === 200
+    )
+  })
+
+  await page.goto('/')
+
+  await expect(page.getByRole('button', { name: /acceptance series/i })).toBeVisible()
+  await page.getByRole('button', { name: /acceptance series/i }).click()
+  await expect(page.getByText('episode-01')).toBeVisible()
+
+  const hlsResponse = await hlsResponsePromise
+  expect(hlsResponse.headers()['content-type']).toMatch(/mpegurl/)
+
+  const statusResponse = await request.get('/api/status')
+  expect(statusResponse.ok()).toBe(true)
+  const status = await statusResponse.json()
+  expect(status.internalSchedule.configured).toBe(true)
+  expect(status.internalSchedule.seriesAllowlist).toEqual(['Acceptance Series'])
+  expect(status.internalPlayout.activeAssetTitle).toBe('episode-01')
+  expect(status.iptv.lastProxyRequestPath).toBeNull()
+
+  const completedEpisode = await request.post('/__e2e/complete-playout')
+  expect(completedEpisode.ok()).toBe(true)
+  await expect
+    .poll(async () => {
+      const response = await request.get('/api/schedule')
+      const payload = await response.json()
+      return payload.schedule[0]?.title
+    })
+    .toBe('01-bump')
+
+  await page.reload()
+  await expect(page.getByRole('button', { name: /01-bump/i })).toBeVisible()
+
+  const bumpHlsResponse = await request.get('/iptv/session/1/hls.m3u8')
+  expect(bumpHlsResponse.ok()).toBe(true)
+  expect(bumpHlsResponse.headers()['content-type']).toMatch(/mpegurl/)
+
+  const completedBump = await request.post('/__e2e/complete-playout')
+  expect(completedBump.ok()).toBe(true)
+  await expect
+    .poll(async () => {
+      const response = await request.get('/api/schedule')
+      const payload = await response.json()
+      return payload.schedule[0]?.episode
+    })
+    .toBe('episode-02')
+
+  await page.reload()
+  const nextEpisodeButton = page.getByRole('button', {
+    name: /acceptance series/i,
+  })
+  await expect(nextEpisodeButton).toBeVisible()
+  await nextEpisodeButton.click()
+  await expect(page.getByText('episode-02')).toBeVisible()
 })
 
 test('chat register flow works and user can sign out again', async ({ page }, testInfo) => {

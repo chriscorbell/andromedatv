@@ -112,6 +112,8 @@ type FfprobeJson = {
     }>;
 };
 
+const channelStateInitializationLocks = new WeakMap<Database, Promise<void>>();
+
 function naturalCompare(left: string, right: string): number {
     return left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" });
 }
@@ -321,6 +323,41 @@ async function persistMediaAssets(db: Database, assets: ScannedAsset[], now: Dat
 }
 
 async function ensureChannelState(
+    db: Database,
+    random: () => number,
+    now: Date
+): Promise<ChannelStateRow> {
+    return withChannelStateInitializationLock(db, async () => {
+        return ensureChannelStateUnlocked(db, random, now);
+    });
+}
+
+async function withChannelStateInitializationLock<T>(
+    db: Database,
+    action: () => Promise<T>
+): Promise<T> {
+    const previousLock = channelStateInitializationLocks.get(db) || Promise.resolve();
+    let releaseLock = () => {};
+    const currentLock = previousLock
+        .catch(() => undefined)
+        .then(() => new Promise<void>((resolve) => {
+            releaseLock = resolve;
+        }));
+
+    channelStateInitializationLocks.set(db, currentLock);
+    await previousLock.catch(() => undefined);
+
+    try {
+        return await action();
+    } finally {
+        releaseLock();
+        if (channelStateInitializationLocks.get(db) === currentLock) {
+            channelStateInitializationLocks.delete(db);
+        }
+    }
+}
+
+async function ensureChannelStateUnlocked(
     db: Database,
     random: () => number,
     now: Date
