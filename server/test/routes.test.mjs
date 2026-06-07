@@ -678,6 +678,129 @@ test("internal schedule reconciles newly schedulable series without reshuffling 
     }
 });
 
+test("internal schedule keeps an existing episode cursor on the same media after new episode insertion", async () => {
+    const context = await createTestContext();
+    const libraryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "andromeda-library-test-"));
+
+    async function seedCachedSeries() {
+        const timestamp = "2026-03-13T12:00:00.000Z";
+        await context.db.run(
+            "INSERT INTO anidb_series " +
+            "(anidb_series_id, title, sort_title, synonyms_json, last_success_at, updated_at) " +
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            3101,
+            "Alpha Series",
+            "Alpha Series",
+            "[]",
+            timestamp,
+            timestamp
+        );
+
+        for (const episode of [
+            {
+                anidbEpisodeId: 9301,
+                chronologicalOrder: 1,
+                episodeNumber: "1",
+                title: "Alpha Episode One",
+            },
+            {
+                anidbEpisodeId: 9303,
+                chronologicalOrder: 3,
+                episodeNumber: "3",
+                title: "Alpha Episode Three",
+            },
+        ]) {
+            await context.db.run(
+                "INSERT INTO anidb_episodes " +
+                "(anidb_episode_id, anidb_series_id, episode_number, title, summary, air_date, chronological_order, updated_at) " +
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                episode.anidbEpisodeId,
+                3101,
+                episode.episodeNumber,
+                episode.title,
+                null,
+                null,
+                episode.chronologicalOrder,
+                timestamp
+            );
+        }
+    }
+
+    try {
+        const seriesRoot = path.join(libraryRoot, "series");
+        const bumpsRoot = path.join(libraryRoot, "bumps");
+        const alphaRoot = path.join(seriesRoot, "Alpha Series");
+        await fs.mkdir(alphaRoot, { recursive: true });
+        await fs.mkdir(bumpsRoot, { recursive: true });
+        await fs.writeFile(path.join(alphaRoot, "Alpha Series - 01.mkv"), "fixture");
+        await fs.writeFile(path.join(alphaRoot, "Alpha Series - 03.mkv"), "fixture");
+        await seedCachedSeries();
+
+        const randomValues = [0.999];
+        const app = createApp({
+            corsOrigin: "*",
+            db: context.db,
+            ersatzBaseUrl: new URL("http://127.0.0.1:8409"),
+            jwtSecret: "test-secret",
+            serveStatic: false,
+            statusApiMode: "public",
+            internalSchedule: {
+                bumpsRoot,
+                seriesRoot,
+                probeMediaAsset: async () => ({
+                    durationSeconds: 1800,
+                    videoCodec: "h264",
+                    audioCodec: "aac",
+                }),
+                random: () => randomValues.shift() ?? 0,
+                now: () => new Date("2026-03-14T12:00:00.000Z"),
+            },
+        });
+
+        const initialScheduleResponse = await request(app)
+            .get("/api/schedule");
+
+        assert.equal(initialScheduleResponse.status, 200);
+        assert.equal(initialScheduleResponse.body.schedule[0].episode, "Alpha Episode Three");
+        assert.deepEqual(
+            await context.db.all("SELECT series_title, episode_index FROM episode_cursors ORDER BY series_title"),
+            [{ series_title: "Alpha Series", episode_index: 1 }]
+        );
+
+        await fs.writeFile(path.join(alphaRoot, "Alpha Series - 02.mkv"), "fixture");
+        await context.db.run(
+            "INSERT INTO anidb_episodes " +
+            "(anidb_episode_id, anidb_series_id, episode_number, title, summary, air_date, chronological_order, updated_at) " +
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            9302,
+            3101,
+            "2",
+            "Alpha Episode Two",
+            null,
+            null,
+            2,
+            "2026-03-14T12:05:00.000Z"
+        );
+
+        const reconciledScheduleResponse = await request(app)
+            .get("/api/schedule");
+
+        assert.equal(reconciledScheduleResponse.status, 200);
+        assert.equal(reconciledScheduleResponse.body.schedule[0].episode, "Alpha Episode Three");
+        assert.deepEqual(
+            reconciledScheduleResponse.body.schedule.map((item) => item.episode).slice(0, 3),
+            ["Alpha Episode Three", "Alpha Episode One", "Alpha Episode Two"]
+        );
+        assert.deepEqual(
+            await context.db.all("SELECT series_title, episode_index FROM episode_cursors ORDER BY series_title"),
+            [{ series_title: "Alpha Series", episode_index: 2 }]
+        );
+    } finally {
+        await fs.rm(libraryRoot, { recursive: true, force: true });
+        await context.cleanup();
+    }
+});
+
 test("sidecar overrides take precedence over cached AniDB metadata", async () => {
     const context = await createTestContext();
     const libraryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "andromeda-library-test-"));

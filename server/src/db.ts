@@ -205,9 +205,17 @@ export async function initDb(dbPath: string): Promise<Database> {
         "channel_state_id INTEGER NOT NULL," +
         "series_title TEXT NOT NULL," +
         "episode_index INTEGER NOT NULL DEFAULT 0," +
+        "media_file_path TEXT," +
         "PRIMARY KEY (channel_state_id, series_title)," +
         "FOREIGN KEY (channel_state_id) REFERENCES channel_state(id) ON DELETE CASCADE" +
         ");"
+    );
+
+    await addColumnIfMissing(
+        db,
+        "episode_cursors",
+        "media_file_path",
+        "media_file_path TEXT"
     );
 
     await db.exec(

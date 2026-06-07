@@ -113,6 +113,7 @@ type ChannelStateRow = {
 };
 
 type EpisodeCursorRow = {
+    media_file_path: string | null;
     series_title: string;
     episode_index: number;
 };
@@ -205,6 +206,11 @@ type UnresolvedEpisodeAsset = {
 
 type SchedulableSeriesRow = {
     episode_count: number;
+    series_title: string;
+};
+
+type EpisodeCursorTargetRow = {
+    file_path: string;
     series_title: string;
 };
 
@@ -1187,6 +1193,25 @@ async function loadPositionedRotationRows(db: Database): Promise<PositionedSerie
     );
 }
 
+async function loadEpisodeCursorTargetRows(db: Database): Promise<EpisodeCursorTargetRow[]> {
+    return db.all<Array<EpisodeCursorTargetRow>>(
+        "SELECT file_path, series_title FROM media_assets " +
+        "WHERE role = 'episode' AND series_title IS NOT NULL AND duration_seconds IS NOT NULL " +
+        "AND chronological_order IS NOT NULL " +
+        "ORDER BY series_title COLLATE NOCASE, chronological_order, sort_key COLLATE NOCASE, title COLLATE NOCASE"
+    );
+}
+
+function groupCursorTargetsBySeries(rows: EpisodeCursorTargetRow[]) {
+    const targetsBySeries = new Map<string, EpisodeCursorTargetRow[]>();
+    for (const row of rows) {
+        const list = targetsBySeries.get(row.series_title) || [];
+        list.push(row);
+        targetsBySeries.set(row.series_title, list);
+    }
+    return targetsBySeries;
+}
+
 function buildReconciledRotation(
     existingRotationRows: PositionedSeriesRotationRow[],
     schedulableSeriesRows: SchedulableSeriesRow[],
@@ -1230,6 +1255,39 @@ function reconcileCurrentRotationIndex(
     return normalizeIndex(state.current_rotation_index, reconciledRotation.length);
 }
 
+function reconcileEpisodeCursor(
+    existingCursor: EpisodeCursorRow | undefined,
+    episodeTargets: EpisodeCursorTargetRow[],
+    random: () => number
+) {
+    if (episodeTargets.length === 0) {
+        return {
+            episodeIndex: 0,
+            mediaFilePath: null,
+        };
+    }
+
+    let episodeIndex: number;
+    if (!existingCursor) {
+        episodeIndex = clampRandomIndex(random, episodeTargets.length);
+    } else if (existingCursor.media_file_path) {
+        const existingAssetIndex = episodeTargets.findIndex(
+            (target) => target.file_path === existingCursor.media_file_path
+        );
+        episodeIndex = existingAssetIndex >= 0
+            ? existingAssetIndex
+            : normalizeIndex(existingCursor.episode_index, episodeTargets.length);
+    } else {
+        episodeIndex = normalizeIndex(existingCursor.episode_index, episodeTargets.length);
+    }
+
+    const target = episodeTargets[episodeIndex] || null;
+    return {
+        episodeIndex,
+        mediaFilePath: target?.file_path || null,
+    };
+}
+
 async function reconcileChannelState(
     db: Database,
     state: ChannelStateRow,
@@ -1238,13 +1296,13 @@ async function reconcileChannelState(
 ): Promise<ChannelStateRow> {
     return runExclusiveTransaction(db, async () => {
         const schedulableSeriesRows = await loadSchedulableSeriesRows(db);
-        const episodeCountsBySeries = new Map(
-            schedulableSeriesRows.map((row) => [row.series_title, row.episode_count])
-        );
         const existingRotationRows = await loadPositionedRotationRows(db);
         const existingCursorRows = await loadCursorRows(db);
         const existingCursorsBySeries = new Map(
-            existingCursorRows.map((row) => [row.series_title, row.episode_index])
+            existingCursorRows.map((row) => [row.series_title, row])
+        );
+        const episodeTargetsBySeries = groupCursorTargetsBySeries(
+            await loadEpisodeCursorTargetRows(db)
         );
         const reconciledRotation = buildReconciledRotation(
             existingRotationRows,
@@ -1274,16 +1332,20 @@ async function reconcileChannelState(
 
         await db.run("DELETE FROM episode_cursors WHERE channel_state_id = 1");
         for (const seriesTitle of reconciledRotation) {
-            const existingEpisodeIndex = existingCursorsBySeries.get(seriesTitle);
-            const episodeCount = episodeCountsBySeries.get(seriesTitle) || 0;
-            const episodeIndex = existingEpisodeIndex === undefined
-                ? clampRandomIndex(random, episodeCount)
-                : normalizeIndex(existingEpisodeIndex, episodeCount);
+            const episodeTargets = episodeTargetsBySeries.get(seriesTitle) || [];
+            const { episodeIndex, mediaFilePath } = reconcileEpisodeCursor(
+                existingCursorsBySeries.get(seriesTitle),
+                episodeTargets,
+                random
+            );
 
             await db.run(
-                "INSERT INTO episode_cursors (channel_state_id, series_title, episode_index) VALUES (1, ?, ?)",
+                "INSERT INTO episode_cursors " +
+                "(channel_state_id, series_title, episode_index, media_file_path) " +
+                "VALUES (1, ?, ?, ?)",
                 seriesTitle,
-                episodeIndex
+                episodeIndex,
+                mediaFilePath
             );
         }
 
@@ -1507,7 +1569,7 @@ async function loadRotationRows(db: Database) {
 
 async function loadCursorRows(db: Database) {
     return await db.all<Array<EpisodeCursorRow>>(
-        "SELECT series_title, episode_index FROM episode_cursors " +
+        "SELECT series_title, episode_index, media_file_path FROM episode_cursors " +
         "WHERE channel_state_id = 1 ORDER BY series_title COLLATE NOCASE"
     );
 }
@@ -1580,10 +1642,13 @@ export async function advanceInternalPlayoutOnCompletion(
         );
 
         for (const [seriesTitle, episodeIndex] of cursor.episodeCursorsBySeries) {
+            const seriesEpisodes = episodesBySeries.get(seriesTitle) || [];
+            const cursorEpisode = seriesEpisodes[normalizeIndex(episodeIndex, seriesEpisodes.length)];
             await options.db.run(
-                "UPDATE episode_cursors SET episode_index = ? " +
+                "UPDATE episode_cursors SET episode_index = ?, media_file_path = ? " +
                 "WHERE channel_state_id = 1 AND series_title = ?",
                 episodeIndex,
+                cursorEpisode?.file_path || null,
                 seriesTitle
             );
         }

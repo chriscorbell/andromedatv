@@ -9,7 +9,7 @@ Move from the temporary Series Allowlist to full Andromeda Library operation whi
 - [ ] Normal production operation can include the full Andromeda Library without the temporary Series Allowlist.
 - [ ] New Schedulable Series are appended after the active Rotation Cycle without reshuffling existing Series Rotation.
 - [ ] Removed or unschedulable Series are excluded from future selections.
-- [ ] New Episodes enter Chronological Episode Order without resetting the Series cursor unless the cursor points to missing media.
+- [x] New Episodes enter Chronological Episode Order without resetting the Series cursor unless the cursor points to missing media.
 - [ ] Diagnostics expose scanner state, unresolved Episode Assets, excluded Series, current Channel State, Playout Engine state, and ffmpeg health.
 - [ ] README and deployment docs no longer describe ErsatzTV as required for internal playout mode.
 
@@ -21,3 +21,4 @@ Move from the temporary Series Allowlist to full Andromeda Library operation whi
 ## Comments
 
 - 2026-06-07: Added the first Library Reconciliation tracer bullet. Internal schedule scans now reconcile persisted Channel State by preserving existing Series Rotation order, appending newly Schedulable Series after the current Rotation Cycle, pruning Series that are no longer schedulable, preserving valid Episode Cursors, and exposing current Channel State on `/api/status`. Remaining work: prove new Episode insertion behavior more explicitly, finish full Andromeda Library production configuration/docs cleanup, and expand operations diagnostics beyond the schedule Channel State slice.
+- 2026-06-07: Added the Episode Cursor identity tracer bullet. Episode Cursors now persist the current Episode Asset file path and Library Reconciliation re-anchors the numeric cursor to that path after new Episodes enter Chronological Episode Order, falling back to the previous index only when the media path is gone. Remaining work: finish full Andromeda Library production configuration/docs cleanup and expand operations diagnostics beyond the schedule Channel State slice.
