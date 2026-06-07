@@ -49,10 +49,22 @@ export type InternalScheduleDiagnostics = {
     scannerDiagnostics: string[];
     unresolvedEpisodeAssets: UnresolvedEpisodeAssetDiagnostic[];
     excludedSeries: ExcludedSeriesDiagnostic[];
+    channelState: InternalChannelStateDiagnostic | null;
 };
 
 type MediaRole = "episode" | "bump";
 type MetadataSource = "anidb" | "filename" | "sidecar";
+
+type InternalChannelStateDiagnostic = {
+    currentRotationIndex: number;
+    bumpCursor: number;
+    currentMediaRole: MediaRole;
+    seriesRotation: string[];
+    episodeCursors: Array<{
+        seriesTitle: string;
+        episodeIndex: number;
+    }>;
+};
 
 type UnresolvedEpisodeAssetDiagnostic = {
     filePath: string;
@@ -107,6 +119,10 @@ type EpisodeCursorRow = {
 
 type SeriesRotationRow = {
     series_title: string;
+};
+
+type PositionedSeriesRotationRow = SeriesRotationRow & {
+    position: number;
 };
 
 type PlayoutCursor = {
@@ -185,6 +201,11 @@ type ResolvedEpisodeAsset = {
 type UnresolvedEpisodeAsset = {
     reason: string;
     seriesTitle: string;
+};
+
+type SchedulableSeriesRow = {
+    episode_count: number;
+    series_title: string;
 };
 
 export type InternalMediaAsset = {
@@ -1129,13 +1150,7 @@ async function ensureChannelStateUnlocked(
         "SELECT id, current_rotation_index, bump_cursor, current_media_role FROM channel_state WHERE id = 1"
     );
     if (existingState) {
-        const rotationCount = await db.get<{ count: number }>(
-            "SELECT COUNT(*) AS count FROM series_rotation WHERE channel_state_id = 1"
-        );
-        if ((rotationCount?.count || 0) === 0) {
-            await createInitialRotation(db, random);
-        }
-        return existingState;
+        return reconcileChannelState(db, existingState, random, now);
     }
 
     const timestamp = now.toISOString();
@@ -1147,46 +1162,150 @@ async function ensureChannelStateUnlocked(
         timestamp
     );
 
-    await createInitialRotation(db, random);
-
-    return {
+    return reconcileChannelState(db, {
         id: 1,
         current_rotation_index: 0,
         bump_cursor: 0,
         current_media_role: "episode",
-    };
+    }, random, now);
 }
 
-async function createInitialRotation(db: Database, random: () => number) {
-    const seriesRows = await db.all<Array<{ series_title: string }>>(
-        "SELECT DISTINCT series_title FROM media_assets " +
+async function loadSchedulableSeriesRows(db: Database): Promise<SchedulableSeriesRow[]> {
+    return db.all<Array<SchedulableSeriesRow>>(
+        "SELECT series_title, COUNT(*) AS episode_count FROM media_assets " +
         "WHERE role = 'episode' AND series_title IS NOT NULL AND duration_seconds IS NOT NULL " +
         "AND chronological_order IS NOT NULL " +
+        "GROUP BY series_title " +
         "ORDER BY series_title COLLATE NOCASE"
     );
-    const seriesTitles = seriesRows.map((row) => row.series_title);
-    const rotation = shuffleSeries(seriesTitles, random);
+}
 
-    for (let index = 0; index < rotation.length; index += 1) {
-        const seriesTitle = rotation[index];
-        await db.run(
-            "INSERT INTO series_rotation (channel_state_id, position, series_title) VALUES (1, ?, ?)",
-            index,
-            seriesTitle
-        );
+async function loadPositionedRotationRows(db: Database): Promise<PositionedSeriesRotationRow[]> {
+    return db.all<Array<PositionedSeriesRotationRow>>(
+        "SELECT position, series_title FROM series_rotation " +
+        "WHERE channel_state_id = 1 ORDER BY position"
+    );
+}
 
-        const episodeCount = await db.get<{ count: number }>(
-            "SELECT COUNT(*) AS count FROM media_assets " +
-            "WHERE role = 'episode' AND series_title = ? AND duration_seconds IS NOT NULL " +
-            "AND chronological_order IS NOT NULL",
-            seriesTitle
-        );
-        await db.run(
-            "INSERT INTO episode_cursors (channel_state_id, series_title, episode_index) VALUES (1, ?, ?)",
-            seriesTitle,
-            clampRandomIndex(random, episodeCount?.count || 0)
-        );
+function buildReconciledRotation(
+    existingRotationRows: PositionedSeriesRotationRow[],
+    schedulableSeriesRows: SchedulableSeriesRow[],
+    random: () => number
+): string[] {
+    const schedulableTitles = new Set(
+        schedulableSeriesRows.map((row) => row.series_title)
+    );
+    const preservedRotation = existingRotationRows
+        .map((row) => row.series_title)
+        .filter((seriesTitle) => schedulableTitles.has(seriesTitle));
+    const preservedTitles = new Set(preservedRotation);
+    const newSeriesTitles = schedulableSeriesRows
+        .map((row) => row.series_title)
+        .filter((seriesTitle) => !preservedTitles.has(seriesTitle));
+
+    return preservedRotation.concat(shuffleSeries(newSeriesTitles, random));
+}
+
+function reconcileCurrentRotationIndex(
+    state: ChannelStateRow,
+    existingRotationRows: PositionedSeriesRotationRow[],
+    reconciledRotation: string[]
+): number {
+    if (reconciledRotation.length === 0) {
+        return 0;
     }
+
+    const existingRotation = existingRotationRows.map((row) => row.series_title);
+    const currentSeriesTitle = existingRotation[normalizeIndex(
+        state.current_rotation_index,
+        existingRotation.length
+    )];
+    if (currentSeriesTitle) {
+        const reconciledCurrentIndex = reconciledRotation.indexOf(currentSeriesTitle);
+        if (reconciledCurrentIndex >= 0) {
+            return reconciledCurrentIndex;
+        }
+    }
+
+    return normalizeIndex(state.current_rotation_index, reconciledRotation.length);
+}
+
+async function reconcileChannelState(
+    db: Database,
+    state: ChannelStateRow,
+    random: () => number,
+    now: Date
+): Promise<ChannelStateRow> {
+    return runExclusiveTransaction(db, async () => {
+        const schedulableSeriesRows = await loadSchedulableSeriesRows(db);
+        const episodeCountsBySeries = new Map(
+            schedulableSeriesRows.map((row) => [row.series_title, row.episode_count])
+        );
+        const existingRotationRows = await loadPositionedRotationRows(db);
+        const existingCursorRows = await loadCursorRows(db);
+        const existingCursorsBySeries = new Map(
+            existingCursorRows.map((row) => [row.series_title, row.episode_index])
+        );
+        const reconciledRotation = buildReconciledRotation(
+            existingRotationRows,
+            schedulableSeriesRows,
+            random
+        );
+        const currentRotationIndex = reconcileCurrentRotationIndex(
+            state,
+            existingRotationRows,
+            reconciledRotation
+        );
+        const bumpCount = await db.get<{ count: number }>(
+            "SELECT COUNT(*) AS count FROM media_assets " +
+            "WHERE role = 'bump' AND duration_seconds IS NOT NULL"
+        );
+        const bumpCursor = normalizeIndex(state.bump_cursor, bumpCount?.count || 0);
+        const timestamp = now.toISOString();
+
+        await db.run("DELETE FROM series_rotation WHERE channel_state_id = 1");
+        for (let index = 0; index < reconciledRotation.length; index += 1) {
+            await db.run(
+                "INSERT INTO series_rotation (channel_state_id, position, series_title) VALUES (1, ?, ?)",
+                index,
+                reconciledRotation[index]
+            );
+        }
+
+        await db.run("DELETE FROM episode_cursors WHERE channel_state_id = 1");
+        for (const seriesTitle of reconciledRotation) {
+            const existingEpisodeIndex = existingCursorsBySeries.get(seriesTitle);
+            const episodeCount = episodeCountsBySeries.get(seriesTitle) || 0;
+            const episodeIndex = existingEpisodeIndex === undefined
+                ? clampRandomIndex(random, episodeCount)
+                : normalizeIndex(existingEpisodeIndex, episodeCount);
+
+            await db.run(
+                "INSERT INTO episode_cursors (channel_state_id, series_title, episode_index) VALUES (1, ?, ?)",
+                seriesTitle,
+                episodeIndex
+            );
+        }
+
+        await db.run(
+            "UPDATE channel_state SET " +
+            "current_rotation_index = ?, " +
+            "bump_cursor = ?, " +
+            "current_media_role = ?, " +
+            "updated_at = ? " +
+            "WHERE id = 1",
+            currentRotationIndex,
+            bumpCursor,
+            state.current_media_role,
+            timestamp
+        );
+
+        return {
+            ...state,
+            bump_cursor: bumpCursor,
+            current_rotation_index: currentRotationIndex,
+        };
+    });
 }
 
 async function loadScheduleAssets(db: Database) {
@@ -1219,14 +1338,37 @@ function toInternalMediaAsset(row: MediaAssetRow): InternalMediaAsset | null {
     };
 }
 
+function buildChannelStateDiagnostic(
+    state: ChannelStateRow,
+    rotationRows: SeriesRotationRow[],
+    cursorRows: EpisodeCursorRow[]
+): InternalChannelStateDiagnostic {
+    return {
+        bumpCursor: state.bump_cursor,
+        currentMediaRole: state.current_media_role,
+        currentRotationIndex: state.current_rotation_index,
+        episodeCursors: cursorRows.map((row) => ({
+            episodeIndex: row.episode_index,
+            seriesTitle: row.series_title,
+        })),
+        seriesRotation: rotationRows.map((row) => row.series_title),
+    };
+}
+
 function buildDiagnostics(
     options: InternalScheduleOptions,
     scan: Awaited<ReturnType<typeof scanInternalLibrary>>,
-    now: Date
+    now: Date,
+    state: ChannelStateRow | null = null,
+    rotationRows: SeriesRotationRow[] = [],
+    cursorRows: EpisodeCursorRow[] = []
 ): InternalScheduleDiagnostics {
     return {
         configured: true,
         bumpsRoot: options.bumpsRoot,
+        channelState: state
+            ? buildChannelStateDiagnostic(state, rotationRows, cursorRows)
+            : null,
         lastError: null,
         lastScanAt: now.toISOString(),
         scannedBumpAssets: scan.assets.filter((asset) => asset.role === "bump").length,
@@ -1365,7 +1507,8 @@ async function loadRotationRows(db: Database) {
 
 async function loadCursorRows(db: Database) {
     return await db.all<Array<EpisodeCursorRow>>(
-        "SELECT series_title, episode_index FROM episode_cursors WHERE channel_state_id = 1"
+        "SELECT series_title, episode_index FROM episode_cursors " +
+        "WHERE channel_state_id = 1 ORDER BY series_title COLLATE NOCASE"
     );
 }
 
@@ -1391,7 +1534,7 @@ export async function loadCurrentInternalMediaAsset(
 
     if (mediaAsset) {
         return {
-            diagnostics: buildDiagnostics(options, scan, now),
+            diagnostics: buildDiagnostics(options, scan, now, state, rotationRows, cursorRows),
             mediaAsset,
         };
     }
@@ -1486,7 +1629,7 @@ export async function loadInternalSchedulePayload(
     }
 
     return {
-        diagnostics: buildDiagnostics(options, scan, now),
+        diagnostics: buildDiagnostics(options, scan, now, state, rotationRows, cursorRows),
         payload: {
             fetchedAt: now.toISOString(),
             refreshAfterMs: computeScheduleRefreshDelay(now, {

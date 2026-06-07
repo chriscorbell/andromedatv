@@ -503,6 +503,181 @@ test("internal schedule resolves schedulable series from the AniDB metadata cach
     }
 });
 
+test("internal schedule reconciles newly schedulable series without reshuffling channel state", async () => {
+    const context = await createTestContext();
+    const libraryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "andromeda-library-test-"));
+
+    async function seedCachedSeries(anidbSeriesId, seriesTitle, episodes) {
+        const timestamp = "2026-03-13T12:00:00.000Z";
+        await context.db.run(
+            "INSERT INTO anidb_series " +
+            "(anidb_series_id, title, sort_title, synonyms_json, last_success_at, updated_at) " +
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            anidbSeriesId,
+            seriesTitle,
+            seriesTitle,
+            "[]",
+            timestamp,
+            timestamp
+        );
+
+        for (const episode of episodes) {
+            await context.db.run(
+                "INSERT INTO anidb_episodes " +
+                "(anidb_episode_id, anidb_series_id, episode_number, title, summary, air_date, chronological_order, updated_at) " +
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                episode.anidbEpisodeId,
+                anidbSeriesId,
+                episode.episodeNumber,
+                episode.title,
+                null,
+                null,
+                episode.chronologicalOrder,
+                timestamp
+            );
+        }
+    }
+
+    try {
+        const seriesRoot = path.join(libraryRoot, "series");
+        const bumpsRoot = path.join(libraryRoot, "bumps");
+        await fs.mkdir(path.join(seriesRoot, "Alpha Series"), { recursive: true });
+        await fs.mkdir(path.join(seriesRoot, "Beta Series"), { recursive: true });
+        await fs.mkdir(bumpsRoot, { recursive: true });
+        await fs.writeFile(path.join(seriesRoot, "Alpha Series", "Alpha Series - 01.mkv"), "fixture");
+        await fs.writeFile(path.join(seriesRoot, "Alpha Series", "Alpha Series - 02.mkv"), "fixture");
+        await fs.writeFile(path.join(seriesRoot, "Beta Series", "Beta Series - 01.mkv"), "fixture");
+
+        await seedCachedSeries(3001, "Alpha Series", [
+            {
+                anidbEpisodeId: 9001,
+                chronologicalOrder: 1,
+                episodeNumber: "1",
+                title: "Alpha Episode One",
+            },
+            {
+                anidbEpisodeId: 9002,
+                chronologicalOrder: 2,
+                episodeNumber: "2",
+                title: "Alpha Episode Two",
+            },
+        ]);
+        await seedCachedSeries(3002, "Beta Series", [
+            {
+                anidbEpisodeId: 9101,
+                chronologicalOrder: 1,
+                episodeNumber: "1",
+                title: "Beta Episode One",
+            },
+        ]);
+
+        const app = createApp({
+            corsOrigin: "*",
+            db: context.db,
+            ersatzBaseUrl: new URL("http://127.0.0.1:8409"),
+            jwtSecret: "test-secret",
+            serveStatic: false,
+            statusApiMode: "public",
+            internalSchedule: {
+                bumpsRoot,
+                seriesRoot,
+                probeMediaAsset: async () => ({
+                    durationSeconds: 1800,
+                    videoCodec: "h264",
+                    audioCodec: "aac",
+                }),
+                random: () => 0.999,
+                now: () => new Date("2026-03-14T12:00:00.000Z"),
+            },
+        });
+
+        await request(app)
+            .get("/api/schedule")
+            .expect(200);
+
+        assert.deepEqual(
+            await context.db.all("SELECT position, series_title FROM series_rotation ORDER BY position"),
+            [
+                { position: 0, series_title: "Alpha Series" },
+                { position: 1, series_title: "Beta Series" },
+            ]
+        );
+        assert.deepEqual(
+            await context.db.all("SELECT series_title, episode_index FROM episode_cursors ORDER BY series_title"),
+            [
+                { series_title: "Alpha Series", episode_index: 1 },
+                { series_title: "Beta Series", episode_index: 0 },
+            ]
+        );
+
+        await context.db.run(
+            "UPDATE channel_state SET current_rotation_index = ?, current_media_role = ? WHERE id = 1",
+            1,
+            "episode"
+        );
+
+        await fs.mkdir(path.join(seriesRoot, "Gamma Series"), { recursive: true });
+        await fs.writeFile(path.join(seriesRoot, "Gamma Series", "Gamma Series - 01.mkv"), "fixture");
+        await seedCachedSeries(3003, "Gamma Series", [
+            {
+                anidbEpisodeId: 9201,
+                chronologicalOrder: 1,
+                episodeNumber: "1",
+                title: "Gamma Episode One",
+            },
+        ]);
+
+        const reconciledScheduleResponse = await request(app)
+            .get("/api/schedule");
+
+        assert.equal(reconciledScheduleResponse.status, 200);
+        assert.deepEqual(
+            reconciledScheduleResponse.body.schedule.map((item) => item.title).slice(0, 4),
+            ["Beta Series", "Gamma Series", "Alpha Series", "Beta Series"]
+        );
+        assert.deepEqual(
+            await context.db.all("SELECT position, series_title FROM series_rotation ORDER BY position"),
+            [
+                { position: 0, series_title: "Alpha Series" },
+                { position: 1, series_title: "Beta Series" },
+                { position: 2, series_title: "Gamma Series" },
+            ]
+        );
+        assert.deepEqual(
+            await context.db.all("SELECT series_title, episode_index FROM episode_cursors ORDER BY series_title"),
+            [
+                { series_title: "Alpha Series", episode_index: 1 },
+                { series_title: "Beta Series", episode_index: 0 },
+                { series_title: "Gamma Series", episode_index: 0 },
+            ]
+        );
+        assert.deepEqual(
+            await context.db.get("SELECT current_rotation_index, current_media_role FROM channel_state WHERE id = 1"),
+            { current_rotation_index: 1, current_media_role: "episode" }
+        );
+
+        const statusResponse = await request(app)
+            .get("/api/status");
+
+        assert.equal(statusResponse.status, 200);
+        assert.deepEqual(statusResponse.body.internalSchedule.channelState, {
+            bumpCursor: 0,
+            currentMediaRole: "episode",
+            currentRotationIndex: 1,
+            episodeCursors: [
+                { episodeIndex: 1, seriesTitle: "Alpha Series" },
+                { episodeIndex: 0, seriesTitle: "Beta Series" },
+                { episodeIndex: 0, seriesTitle: "Gamma Series" },
+            ],
+            seriesRotation: ["Alpha Series", "Beta Series", "Gamma Series"],
+        });
+        assert.deepEqual(statusResponse.body.internalSchedule.seriesAllowlist, []);
+    } finally {
+        await fs.rm(libraryRoot, { recursive: true, force: true });
+        await context.cleanup();
+    }
+});
+
 test("sidecar overrides take precedence over cached AniDB metadata", async () => {
     const context = await createTestContext();
     const libraryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "andromeda-library-test-"));

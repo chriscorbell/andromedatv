@@ -269,6 +269,7 @@ export function createApp(options: CreateAppOptions) {
         internalSchedule: {
             configured: Boolean(internalScheduleOptions),
             bumpsRoot: internalScheduleOptions?.bumpsRoot || null,
+            channelState: null,
             lastError: null,
             lastScanAt: null,
             scannedBumpAssets: 0,
