@@ -233,6 +233,118 @@ test("status endpoint summarizes recent schedule and chat activity", async () =>
     }
 });
 
+test("schedule endpoint serves an internal preview from allowlisted media assets", async () => {
+    const context = await createTestContext();
+    const libraryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "andromeda-library-test-"));
+
+    try {
+        const seriesRoot = path.join(libraryRoot, "series");
+        const bumpsRoot = path.join(libraryRoot, "bumps");
+        await fs.mkdir(path.join(seriesRoot, "Allowed Series"), { recursive: true });
+        await fs.mkdir(path.join(seriesRoot, "Skipped Series"), { recursive: true });
+        await fs.mkdir(bumpsRoot, { recursive: true });
+        await fs.writeFile(path.join(seriesRoot, "Allowed Series", "episode-01.mp4"), "fixture");
+        await fs.writeFile(path.join(seriesRoot, "Skipped Series", "episode-01.mp4"), "fixture");
+        await fs.writeFile(path.join(bumpsRoot, "02-later.mp4"), "fixture");
+        await fs.writeFile(path.join(bumpsRoot, "01-first.mp4"), "fixture");
+
+        const app = createApp({
+            corsOrigin: "*",
+            db: context.db,
+            ersatzBaseUrl: new URL("http://127.0.0.1:8409"),
+            jwtSecret: "test-secret",
+            serveStatic: false,
+            statusApiMode: "public",
+            internalSchedule: {
+                bumpsRoot,
+                seriesAllowlist: ["Allowed Series"],
+                seriesRoot,
+                probeMediaAsset: async (filePath) => ({
+                    durationSeconds: filePath.includes("episode") ? 1800 : 30,
+                    videoCodec: "h264",
+                    audioCodec: "aac",
+                }),
+                random: () => 0,
+                now: () => new Date("2026-03-14T12:00:00.000Z"),
+            },
+        });
+
+        const scheduleResponse = await request(app)
+            .get("/api/schedule");
+
+        assert.equal(scheduleResponse.status, 200);
+        assert.deepEqual(
+            scheduleResponse.body.schedule.map((item) => item.title).slice(0, 3),
+            ["Allowed Series", "01-first", "Allowed Series"]
+        );
+        assert.deepEqual(scheduleResponse.body.schedule[0], {
+            episode: "episode-01",
+            live: true,
+            startAt: "2026-03-14T12:00:00.000Z",
+            stopAt: "2026-03-14T12:30:00.000Z",
+            time: "live",
+            title: "Allowed Series",
+        });
+        assert.equal(scheduleResponse.body.schedule[1].startAt, "2026-03-14T12:30:00.000Z");
+        assert.equal(scheduleResponse.body.schedule[1].stopAt, "2026-03-14T12:30:30.000Z");
+
+        const persistedAssets = await context.db.all(
+            "SELECT role, series_title, title, duration_seconds, video_codec, audio_codec FROM media_assets ORDER BY role, title"
+        );
+        assert.deepEqual(persistedAssets, [
+            {
+                role: "bump",
+                series_title: null,
+                title: "01-first",
+                duration_seconds: 30,
+                video_codec: "h264",
+                audio_codec: "aac",
+            },
+            {
+                role: "bump",
+                series_title: null,
+                title: "02-later",
+                duration_seconds: 30,
+                video_codec: "h264",
+                audio_codec: "aac",
+            },
+            {
+                role: "episode",
+                series_title: "Allowed Series",
+                title: "episode-01",
+                duration_seconds: 1800,
+                video_codec: "h264",
+                audio_codec: "aac",
+            },
+        ]);
+
+        assert.deepEqual(
+            await context.db.all("SELECT current_rotation_index, bump_cursor FROM channel_state"),
+            [{ current_rotation_index: 0, bump_cursor: 0 }]
+        );
+        assert.deepEqual(
+            await context.db.all("SELECT position, series_title FROM series_rotation"),
+            [{ position: 0, series_title: "Allowed Series" }]
+        );
+        assert.deepEqual(
+            await context.db.all("SELECT series_title, episode_index FROM episode_cursors"),
+            [{ series_title: "Allowed Series", episode_index: 0 }]
+        );
+
+        const statusResponse = await request(app)
+            .get("/api/status");
+
+        assert.equal(statusResponse.status, 200);
+        assert.equal(statusResponse.body.internalSchedule.configured, true);
+        assert.equal(statusResponse.body.internalSchedule.scannedEpisodeAssets, 1);
+        assert.equal(statusResponse.body.internalSchedule.scannedBumpAssets, 2);
+        assert.deepEqual(statusResponse.body.internalSchedule.scannerDiagnostics, []);
+    } finally {
+        await fs.rm(libraryRoot, { recursive: true, force: true });
+        await context.cleanup();
+    }
+});
+
 test("status diagnostics prune expired rate limits after the cooldown window", async () => {
     const context = await createTestContext();
     const originalDateNow = Date.now;

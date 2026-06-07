@@ -65,7 +65,15 @@ Node + Express + SQLite
 In a dedicated directory, create `.env` from `.env.example` and set:
 
 ```
-ERSATZTV_BASE_URL=http://your-ersatztv-host:8409 # Required - replace this with your ErsatzTV host URL
+PLAYOUT_MODE=ersatztv # Optional - "ersatztv" (default) or "internal"
+
+ERSATZTV_BASE_URL=http://your-ersatztv-host:8409 # Required when PLAYOUT_MODE=ersatztv
+
+ANDROMEDA_SERIES_ROOT=/nas/media/andromeda/series # Used when PLAYOUT_MODE=internal
+
+ANDROMEDA_BUMPS_ROOT=/nas/media/andromeda/bumps # Used when PLAYOUT_MODE=internal
+
+ANDROMEDA_SERIES_ALLOWLIST= # Optional comma-separated Series Allowlist for internal playout
 
 INITIAL_ADMIN_NICKNAME=andromedatv # Required - bootstraps the first admin if none exists
 
@@ -86,6 +94,8 @@ DB_PATH=/data/andromeda.db # Optional - default database path
 ```
 
 The admin bootstrap only runs when there are no admin users in the database. After the first admin exists, those variables are ignored unless you reset the chat DB.
+
+Set `PLAYOUT_MODE=internal` to serve `/api/schedule` from the internal schedule preview. In internal mode, AndromedaTV scans `ANDROMEDA_SERIES_ROOT` for allowlisted Episode Assets, scans `ANDROMEDA_BUMPS_ROOT` for filename-sorted Bump Assets, persists discovered media facts and first Channel State in SQLite, and reports scanner diagnostics through `/api/status`. `ERSATZTV_BASE_URL` is still required for the legacy ErsatzTV proxy mode.
 
 If `JWT_SECRET` is omitted, the app writes a generated secret to `/data/jwt-secret` on first boot and reuses it on later starts. Keep the `/data` volume persistent so chat sessions remain valid across restarts.
 

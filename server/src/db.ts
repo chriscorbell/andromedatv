@@ -50,5 +50,55 @@ export async function initDb(dbPath: string): Promise<Database> {
         ");"
     );
 
+    await db.exec(
+        "CREATE TABLE IF NOT EXISTS media_assets (" +
+        "id INTEGER PRIMARY KEY AUTOINCREMENT," +
+        "file_path TEXT NOT NULL UNIQUE," +
+        "role TEXT NOT NULL CHECK (role IN ('episode', 'bump'))," +
+        "series_title TEXT," +
+        "title TEXT NOT NULL," +
+        "duration_seconds REAL," +
+        "video_codec TEXT," +
+        "audio_codec TEXT," +
+        "sort_key TEXT NOT NULL," +
+        "updated_at TEXT NOT NULL" +
+        ");"
+    );
+
+    await db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_media_assets_role_series_sort " +
+        "ON media_assets(role, series_title, sort_key);"
+    );
+
+    await db.exec(
+        "CREATE TABLE IF NOT EXISTS channel_state (" +
+        "id INTEGER PRIMARY KEY CHECK (id = 1)," +
+        "current_rotation_index INTEGER NOT NULL DEFAULT 0," +
+        "bump_cursor INTEGER NOT NULL DEFAULT 0," +
+        "created_at TEXT NOT NULL," +
+        "updated_at TEXT NOT NULL" +
+        ");"
+    );
+
+    await db.exec(
+        "CREATE TABLE IF NOT EXISTS series_rotation (" +
+        "channel_state_id INTEGER NOT NULL," +
+        "position INTEGER NOT NULL," +
+        "series_title TEXT NOT NULL," +
+        "PRIMARY KEY (channel_state_id, position)," +
+        "FOREIGN KEY (channel_state_id) REFERENCES channel_state(id) ON DELETE CASCADE" +
+        ");"
+    );
+
+    await db.exec(
+        "CREATE TABLE IF NOT EXISTS episode_cursors (" +
+        "channel_state_id INTEGER NOT NULL," +
+        "series_title TEXT NOT NULL," +
+        "episode_index INTEGER NOT NULL DEFAULT 0," +
+        "PRIMARY KEY (channel_state_id, series_title)," +
+        "FOREIGN KEY (channel_state_id) REFERENCES channel_state(id) ON DELETE CASCADE" +
+        ");"
+    );
+
     return db;
 }

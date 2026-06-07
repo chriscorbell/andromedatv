@@ -15,6 +15,11 @@ import {
     validateMessage,
     validateNickname,
 } from "./lib/auth";
+import {
+    InternalScheduleDiagnostics,
+    InternalScheduleOptions,
+    loadInternalSchedulePayload,
+} from "./lib/internal-schedule";
 import { normalizeScheduleXml, SchedulePayload } from "./lib/schedule";
 
 const STREAM_AUTH_COOKIE_NAME = "andromeda_stream";
@@ -87,6 +92,7 @@ export type CreateAppOptions = {
     trustProxy?: boolean | number | string;
     logger?: Pick<Console, "info" | "warn" | "error">;
     loadSchedulePayload?: ScheduleLoader;
+    internalSchedule?: Omit<InternalScheduleOptions, "db">;
 };
 
 type LogLevel = "info" | "warn" | "error";
@@ -199,6 +205,10 @@ export function createApp(options: CreateAppOptions) {
         trustProxy,
     } = options;
 
+    const internalScheduleOptions = options.internalSchedule
+        ? { ...options.internalSchedule, db }
+        : null;
+
     const publicStreamClients = new Set<PublicStreamClient>();
     const privateStreamClients = new Set<PrivateStreamClient>();
     let heartbeatTimer: NodeJS.Timeout | null = null;
@@ -247,6 +257,17 @@ export function createApp(options: CreateAppOptions) {
             lastProxyErrorAt: null as string | null,
             lastProxyError: null as string | null,
         },
+        internalSchedule: {
+            configured: Boolean(internalScheduleOptions),
+            bumpsRoot: internalScheduleOptions?.bumpsRoot || null,
+            lastError: null,
+            lastScanAt: null,
+            scannedBumpAssets: 0,
+            scannedEpisodeAssets: 0,
+            seriesAllowlist: internalScheduleOptions?.seriesAllowlist || [],
+            seriesRoot: internalScheduleOptions?.seriesRoot || null,
+            scannerDiagnostics: [],
+        } as InternalScheduleDiagnostics,
     };
 
     function logEvent(level: LogLevel, event: string, details: Record<string, unknown> = {}) {
@@ -435,6 +456,7 @@ export function createApp(options: CreateAppOptions) {
                 lastProxyRequestAt: diagnostics.iptv.lastProxyRequestAt,
                 lastProxyRequestPath: diagnostics.iptv.lastProxyRequestPath,
             },
+            internalSchedule: diagnostics.internalSchedule,
         };
     }
 
@@ -503,7 +525,17 @@ export function createApp(options: CreateAppOptions) {
         }));
     };
 
-    const baseLoadSchedulePayload: ScheduleLoader = options.loadSchedulePayload || (async () => {
+    const baseLoadSchedulePayload: ScheduleLoader = options.loadSchedulePayload || (internalScheduleOptions ? async () => {
+        try {
+            const result = await loadInternalSchedulePayload(internalScheduleOptions);
+            diagnostics.internalSchedule = result.diagnostics;
+            return result.payload;
+        } catch (error) {
+            diagnostics.internalSchedule.lastError =
+                error instanceof Error ? error.message : String(error);
+            throw error;
+        }
+    } : async () => {
         const now = Date.now();
         if (scheduleCache && scheduleCache.expiresAt > now) {
             return scheduleCache.payload;
