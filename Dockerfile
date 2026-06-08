@@ -38,12 +38,26 @@ COPY --from=server-build --chown=node:node /app/server/dist /app/server/dist
 COPY --from=server-build --chown=node:node /app/server/package.json /app/server/package.json
 COPY --from=server-build --chown=node:node /app/server/node_modules /app/server/node_modules
 
+# Live HLS transcoding uses jellyfin-ffmpeg7, which bundles a current ffmpeg (7.x)
+# together with a matched Intel media stack (iHD driver 25.x + oneVPL). Debian's
+# own ffmpeg 5.1 + intel-media-va-driver 23.1 segfault on VAAPI surface allocation
+# with Arc (DG2) GPUs, so we deliberately avoid the distro packages here.
+# LIBVA_DRIVERS_PATH points libva at the bundled iHD driver; the app spawns bare
+# "ffmpeg"/"ffprobe", so both are symlinked onto PATH.
+ENV LIBVA_DRIVERS_PATH=/usr/lib/jellyfin-ffmpeg/lib/dri \
+    LIBVA_DRIVER_NAME=iHD
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends \
-    ffmpeg \
-    intel-media-va-driver \
-    libva-drm2 \
-    vainfo \
+  && apt-get install -y --no-install-recommends curl gnupg ca-certificates \
+  && mkdir -p /etc/apt/keyrings \
+  && curl -fsSL https://repo.jellyfin.org/jellyfin_team.gpg.key \
+       | gpg --dearmor -o /etc/apt/keyrings/jellyfin.gpg \
+  && printf 'Types: deb\nURIs: https://repo.jellyfin.org/debian\nSuites: bookworm\nComponents: main\nSigned-By: /etc/apt/keyrings/jellyfin.gpg\n' \
+       > /etc/apt/sources.list.d/jellyfin.sources \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends jellyfin-ffmpeg7 \
+  && ln -sf /usr/lib/jellyfin-ffmpeg/ffmpeg /usr/bin/ffmpeg \
+  && ln -sf /usr/lib/jellyfin-ffmpeg/ffprobe /usr/bin/ffprobe \
+  && apt-get purge -y --auto-remove curl gnupg \
   && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /data && chown -R node:node /data

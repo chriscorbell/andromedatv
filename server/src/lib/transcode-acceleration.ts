@@ -163,6 +163,10 @@ function buildIntelVaapiAttempt(
             "format=nv12,hwupload",
             "-c:v",
             "h264_vaapi",
+            // Arc (DG2) and recent iGPUs only expose the Low-Power H264 encode
+            // entrypoint (VAEntrypointEncSliceLP); request it explicitly.
+            "-low_power",
+            "1",
             "-qp",
             "23",
             ...hlsOutputArgs(options),

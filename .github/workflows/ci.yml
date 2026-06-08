@@ -116,8 +116,8 @@ jobs:
           context: .
           file: ./Dockerfile
           push: true
-          # amd64 only: the runtime image installs intel-media-va-driver for
-          # Intel Quick Sync transcoding, which has no arm64 package.
+          # amd64 only: the runtime image installs jellyfin-ffmpeg7 (bundled
+          # Intel media stack) for hardware transcoding, which is amd64-only.
           platforms: linux/amd64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
