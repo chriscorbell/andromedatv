@@ -52,7 +52,9 @@ export function useSchedule() {
       }
 
       try {
-        const { data, response } = await api.schedule.get()
+        const { data, response } = await api.schedule.get({
+          bypassCache: reason === 'manual',
+        })
         if (!response.ok) {
           throw new Error('Failed to load normalized schedule')
         }

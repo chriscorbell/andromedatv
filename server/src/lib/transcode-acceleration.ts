@@ -28,6 +28,8 @@ export type ValidateTranscodeAccelerationOptions = {
     pathExists?: (filePath: string) => Promise<boolean>;
 };
 
+const LIVE_HLS_LIST_SIZE = 24;
+
 async function defaultPathExists(filePath: string): Promise<boolean> {
     try {
         await fs.access(filePath);
@@ -111,7 +113,7 @@ function hlsOutputArgs({
         "-hls_time",
         "4",
         "-hls_list_size",
-        "6",
+        String(LIVE_HLS_LIST_SIZE),
         "-hls_flags",
         "delete_segments+independent_segments",
         "-hls_segment_filename",

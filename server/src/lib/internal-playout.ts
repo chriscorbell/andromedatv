@@ -367,6 +367,7 @@ export function createInternalPlayout(options: InternalPlayoutOptions) {
     };
 
     let ensureInFlight: Promise<ActivePlayout> | null = null;
+    let completionInFlight: Promise<void> | null = null;
 
     // Concurrent callers (e.g. simultaneous first-init requests) must share a
     // single transcode: otherwise each would write the same playlist file at
@@ -382,6 +383,10 @@ export function createInternalPlayout(options: InternalPlayoutOptions) {
     }
 
     async function runEnsureLiveHls() {
+        if (completionInFlight) {
+            await completionInFlight;
+        }
+
         if (active && await pathExists(active.playlistPath)) {
             return active;
         }
@@ -443,7 +448,7 @@ export function createInternalPlayout(options: InternalPlayoutOptions) {
                         ffmpegPid: null,
                         hardwareAccelerationActive: false,
                     };
-                    void (async () => {
+                    completionInFlight = (async () => {
                         await markPlayoutHistoryCompleted(
                             options.db,
                             historyId,
@@ -454,15 +459,19 @@ export function createInternalPlayout(options: InternalPlayoutOptions) {
                             scheduleOptions(options),
                             mediaAsset
                         );
-                    })().catch((error) => {
-                        diagnostics = {
-                            ...diagnostics,
-                            lastFailureAt: new Date().toISOString(),
-                            lastFailureMessage: error instanceof Error
-                                ? error.message
-                                : String(error),
-                        };
-                    });
+                    })()
+                        .catch((error) => {
+                            diagnostics = {
+                                ...diagnostics,
+                                lastFailureAt: new Date().toISOString(),
+                                lastFailureMessage: error instanceof Error
+                                    ? error.message
+                                    : String(error),
+                            };
+                        })
+                        .finally(() => {
+                            completionInFlight = null;
+                        });
                     return;
                 }
 
@@ -504,6 +513,12 @@ export function createInternalPlayout(options: InternalPlayoutOptions) {
         }
     }
 
+    async function waitForCompletion() {
+        while (completionInFlight) {
+            await completionInFlight;
+        }
+    }
+
     function resolveHlsFile(suffixPath: string): string | null {
         if (!active) {
             return null;
@@ -534,5 +549,6 @@ export function createInternalPlayout(options: InternalPlayoutOptions) {
         ensureLiveHls,
         getDiagnostics: () => diagnostics,
         resolveHlsFile,
+        waitForCompletion,
     };
 }

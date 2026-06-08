@@ -394,6 +394,62 @@ test("schedule endpoint serves an internal preview from allowlisted media assets
     }
 });
 
+test("internal schedule route caches repeated loads until explicitly bypassed", async () => {
+    const context = await createTestContext();
+    const libraryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "andromeda-library-test-"));
+    let probeCount = 0;
+
+    try {
+        const seriesRoot = path.join(libraryRoot, "series");
+        const bumpsRoot = path.join(libraryRoot, "bumps");
+        await fs.mkdir(path.join(seriesRoot, "Cached Route Series"), { recursive: true });
+        await fs.mkdir(bumpsRoot, { recursive: true });
+        await fs.writeFile(path.join(seriesRoot, "Cached Route Series", "episode-01.mp4"), "fixture");
+
+        const app = createApp({
+            corsOrigin: "*",
+            db: context.db,
+            ersatzBaseUrl: new URL("http://127.0.0.1:8409"),
+            jwtSecret: "test-secret",
+            serveStatic: false,
+            statusApiMode: "public",
+            internalSchedule: {
+                bumpsRoot,
+                seriesRoot,
+                probeMediaAsset: async () => {
+                    probeCount += 1;
+                    return {
+                        durationSeconds: 1800,
+                        videoCodec: "h264",
+                        audioCodec: "aac",
+                    };
+                },
+                random: () => 0,
+                now: () => new Date("2026-03-14T12:00:00.000Z"),
+            },
+        });
+
+        await request(app)
+            .get("/api/schedule")
+            .expect(200);
+        assert.equal(probeCount, 1);
+
+        await request(app)
+            .get("/api/schedule")
+            .expect(200);
+        assert.equal(probeCount, 1);
+
+        await request(app)
+            .get("/api/schedule")
+            .set("Cache-Control", "no-cache")
+            .expect(200);
+        assert.equal(probeCount, 2);
+    } finally {
+        await fs.rm(libraryRoot, { recursive: true, force: true });
+        await context.cleanup();
+    }
+});
+
 test("internal schedule resolves schedulable series from the AniDB metadata cache", async () => {
     const context = await createTestContext();
     const libraryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "andromeda-library-test-"));
@@ -647,7 +703,8 @@ test("internal schedule reconciles newly schedulable series without reshuffling 
         ]);
 
         const reconciledScheduleResponse = await request(app)
-            .get("/api/schedule");
+            .get("/api/schedule")
+            .set("Cache-Control", "no-cache");
 
         assert.equal(reconciledScheduleResponse.status, 200);
         assert.deepEqual(
@@ -802,7 +859,8 @@ test("internal schedule keeps an existing episode cursor on the same media after
         );
 
         const reconciledScheduleResponse = await request(app)
-            .get("/api/schedule");
+            .get("/api/schedule")
+            .set("Cache-Control", "no-cache");
 
         assert.equal(reconciledScheduleResponse.status, 200);
         assert.equal(reconciledScheduleResponse.body.schedule[0].episode, "Alpha Episode Three");
@@ -915,7 +973,9 @@ test("internal schedule prunes a removed series from the persisted rotation and 
 
         await fs.rm(betaRoot, { recursive: true, force: true });
 
-        const reconciledScheduleResponse = await request(app).get("/api/schedule");
+        const reconciledScheduleResponse = await request(app)
+            .get("/api/schedule")
+            .set("Cache-Control", "no-cache");
 
         assert.equal(reconciledScheduleResponse.status, 200);
         assert.equal(
@@ -1546,16 +1606,21 @@ test("internal playout advances schedule only after confirmed media completion",
             },
         });
 
-        async function currentSchedulePayload() {
-            const response = await request(app)
+        async function currentSchedulePayload({ bypassCache = false } = {}) {
+            const scheduleRequest = request(app)
                 .get("/api/schedule");
+            if (bypassCache) {
+                scheduleRequest.set("Cache-Control", "no-cache");
+            }
+
+            const response = await scheduleRequest;
 
             assert.equal(response.status, 200);
             return response.body;
         }
 
-        async function currentScheduleTitles() {
-            const payload = await currentSchedulePayload();
+        async function currentScheduleTitles(options) {
+            const payload = await currentSchedulePayload(options);
             return payload.schedule.map((item) => item.title);
         }
 
@@ -1566,7 +1631,10 @@ test("internal playout advances schedule only after confirmed media completion",
             return JSON.stringify(rows);
         }
 
-        async function completeCurrentAsset(expectedTitle) {
+        async function completeCurrentAsset(
+            expectedTitle,
+            { requestNextPlaylistTitle = null, requestNextScheduleTitle = null } = {}
+        ) {
             // Polling the playlist is idempotent while an asset is active, so this
             // waits for the previous asset's completion to advance the schedule
             // rather than racing it with a fixed sleep.
@@ -1586,10 +1654,34 @@ test("internal playout advances schedule only after confirmed media completion",
             // caller asserts on the post-advancement schedule.
             const before = await channelStateSnapshot();
             playoutProcesses.at(-1).emit("exit", 0, null);
+            const nextPlaylistResponsePromise = requestNextPlaylistTitle
+                ? request(app)
+                    .get("/iptv/session/1/hls.m3u8")
+                    .then((response) => response)
+                : null;
+            const nextScheduleResponsePromise = requestNextScheduleTitle
+                ? request(app)
+                    .get("/api/schedule")
+                    .set("Cache-Control", "no-cache")
+                    .then((response) => response)
+                : null;
             await waitFor(
                 async () => (await channelStateSnapshot()) !== before,
                 { label: `schedule to advance past ${expectedTitle}` }
             );
+            if (nextPlaylistResponsePromise) {
+                const nextPlaylistResponse = await nextPlaylistResponsePromise;
+                assert.equal(nextPlaylistResponse.status, 200);
+                assert.equal(transcodeRequests.at(-1)?.title, requestNextPlaylistTitle);
+            }
+            if (nextScheduleResponsePromise) {
+                const nextScheduleResponse = await nextScheduleResponsePromise;
+                assert.equal(nextScheduleResponse.status, 200);
+                assert.equal(
+                    nextScheduleResponse.body.schedule[0]?.title,
+                    requestNextScheduleTitle
+                );
+            }
         }
 
         assert.deepEqual(
@@ -1601,8 +1693,11 @@ test("internal playout advances schedule only after confirmed media completion",
             ["Alpha Series", "Beta Series"]
         );
 
-        await completeCurrentAsset("episode-01");
-        const bumpHiddenSchedule = await currentSchedulePayload();
+        await completeCurrentAsset("episode-01", {
+            requestNextPlaylistTitle: "01-first-bump",
+            requestNextScheduleTitle: "Beta Series",
+        });
+        const bumpHiddenSchedule = await currentSchedulePayload({ bypassCache: true });
         assert.equal(bumpHiddenSchedule.schedule[0]?.title, "Beta Series");
         assert.equal(bumpHiddenSchedule.schedule[0]?.live, false);
         assert.equal(bumpHiddenSchedule.schedule[0]?.startAt, "2026-03-14T12:00:30.000Z");
@@ -1614,7 +1709,7 @@ test("internal playout advances schedule only after confirmed media completion",
 
         await completeCurrentAsset("01-first-bump");
         assert.deepEqual(
-            (await currentScheduleTitles()).slice(0, 4),
+            (await currentScheduleTitles({ bypassCache: true })).slice(0, 4),
             ["Beta Series", "Alpha Series", "Beta Series", "Alpha Series"]
         );
         assert.deepEqual(
@@ -1636,7 +1731,7 @@ test("internal playout advances schedule only after confirmed media completion",
         await completeCurrentAsset("episode-01");
         await completeCurrentAsset("02-second-bump");
         assert.deepEqual(
-            (await currentScheduleTitles()).slice(0, 3),
+            (await currentScheduleTitles({ bypassCache: true })).slice(0, 3),
             ["Alpha Series", "Beta Series", "Alpha Series"]
         );
         assert.deepEqual(
@@ -1649,7 +1744,7 @@ test("internal playout advances schedule only after confirmed media completion",
         await completeCurrentAsset("episode-02");
         await completeCurrentAsset("01-first-bump");
         assert.deepEqual(
-            (await currentScheduleTitles()).slice(0, 3),
+            (await currentScheduleTitles({ bypassCache: true })).slice(0, 3),
             ["Beta Series", "Alpha Series", "Beta Series"]
         );
         assert.deepEqual(

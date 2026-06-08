@@ -54,7 +54,9 @@ test('internal playback acceptance uses the generated schedule and HLS route', a
   expect(completedEpisode.ok()).toBe(true)
   await expect
     .poll(async () => {
-      const response = await request.get('/api/schedule')
+      const response = await request.get('/api/schedule', {
+        headers: { 'Cache-Control': 'no-cache' },
+      })
       const payload = await response.json()
       return payload.schedule[0]?.episode
     })
@@ -74,7 +76,9 @@ test('internal playback acceptance uses the generated schedule and HLS route', a
   expect(completedBump.ok()).toBe(true)
   await expect
     .poll(async () => {
-      const response = await request.get('/api/schedule')
+      const response = await request.get('/api/schedule', {
+        headers: { 'Cache-Control': 'no-cache' },
+      })
       const payload = await response.json()
       return payload.schedule[0]?.live
     })

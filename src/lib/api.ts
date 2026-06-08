@@ -44,6 +44,10 @@ export type SchedulePayload = {
   schedule?: ScheduleItem[]
 }
 
+export type ScheduleRequestOptions = {
+  bypassCache?: boolean
+}
+
 type JsonRequestOptions = {
   body?: unknown
   credentials?: RequestCredentials
@@ -89,8 +93,10 @@ export function createChatStreamUrl(pathname: string) {
 
 export const api = {
   schedule: {
-    async get() {
-      return requestJson<SchedulePayload>(`${API_BASE_URL}/schedule`)
+    async get({ bypassCache = false }: ScheduleRequestOptions = {}) {
+      return requestJson<SchedulePayload>(`${API_BASE_URL}/schedule`, {
+        headers: bypassCache ? { 'Cache-Control': 'no-cache' } : undefined,
+      })
     },
   },
   chat: {

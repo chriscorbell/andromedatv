@@ -58,5 +58,6 @@ describe('useSchedule', () => {
       expect(result.current.scheduleState).toBe('ready')
     })
     expect(result.current.schedule[0]?.title).toBe('Angel Cop')
+    expect(getSchedule).toHaveBeenLastCalledWith({ bypassCache: true })
   })
 })

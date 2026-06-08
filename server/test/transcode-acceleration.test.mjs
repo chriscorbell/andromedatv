@@ -62,6 +62,9 @@ test("live HLS transcode attempts keep disabled mode on the CPU encoder", () => 
     assert.equal(attempts[0].label, "cpu");
     assert.ok(attempts[0].args.includes("libx264"));
     assert.ok(!attempts[0].args.includes("h264_vaapi"));
+    const hlsListSizeIndex = attempts[0].args.indexOf("-hls_list_size");
+    assert.notEqual(hlsListSizeIndex, -1);
+    assert.equal(attempts[0].args[hlsListSizeIndex + 1], "24");
 });
 
 test("preferred transcode acceleration tries Intel hardware before CPU fallback", () => {

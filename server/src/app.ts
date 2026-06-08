@@ -34,6 +34,9 @@ const RATE_LIMIT_MAX = 5;
 const RATE_WINDOW_MS = 10_000;
 const COOLDOWN_MS = 60_000;
 const RATE_LIMIT_PRUNE_INTERVAL_MS = 30_000;
+const SCHEDULE_CACHE_MIN_TTL_MS = 1_000;
+const XMLTV_SCHEDULE_CACHE_MAX_TTL_MS = 30_000;
+const INTERNAL_SCHEDULE_CACHE_MAX_TTL_MS = 5 * 60_000;
 
 const HOP_BY_HOP_HEADERS = new Set([
     "connection",
@@ -83,7 +86,11 @@ type RateLimitEntry = {
     cooldownUntil?: number;
 };
 
-type ScheduleLoader = () => Promise<SchedulePayload>;
+type ScheduleLoadOptions = {
+    bypassCache?: boolean;
+};
+
+type ScheduleLoader = (options?: ScheduleLoadOptions) => Promise<SchedulePayload>;
 
 export type CreateAppOptions = {
     corsOrigin: string;
@@ -132,6 +139,20 @@ function getRequestOrigin(req: Request): string {
         return "";
     }
     return `${proto}://${host}`;
+}
+
+function getScheduleCacheTtlMs(payload: SchedulePayload, maxTtlMs: number): number {
+    const refreshAfterMs = Number.isFinite(payload.refreshAfterMs)
+        ? payload.refreshAfterMs
+        : maxTtlMs;
+
+    return Math.min(Math.max(refreshAfterMs, SCHEDULE_CACHE_MIN_TTL_MS), maxTtlMs);
+}
+
+function requestBypassesScheduleCache(req: Request): boolean {
+    const cacheControl = req.header("cache-control") || "";
+    const pragma = req.header("pragma") || "";
+    return /\bno-cache\b/i.test(cacheControl) || /\bno-cache\b/i.test(pragma);
 }
 
 function isPlaylistResponse(contentType: string | undefined, pathname: string): boolean {
@@ -556,27 +577,58 @@ export function createApp(options: CreateAppOptions) {
         }));
     };
 
-    const baseLoadSchedulePayload: ScheduleLoader = options.loadSchedulePayload || (internalScheduleOptions ? async () => {
-        try {
-            const result = await loadInternalSchedulePayload(internalScheduleOptions);
-            diagnostics.internalSchedule = result.diagnostics;
-            return result.payload;
-        } catch (error) {
-            diagnostics.internalSchedule.lastError =
-                error instanceof Error ? error.message : String(error);
-            throw error;
-        }
-    } : async () => {
+    const baseLoadSchedulePayload: ScheduleLoader = options.loadSchedulePayload || (internalScheduleOptions ? async ({ bypassCache = false } = {}) => {
         const now = Date.now();
-        if (scheduleCache && scheduleCache.expiresAt > now) {
+        if (!bypassCache && scheduleCache && scheduleCache.expiresAt > now) {
             return scheduleCache.payload;
         }
 
-        if (scheduleCachePromise) {
+        if (!bypassCache && scheduleCachePromise) {
             return scheduleCachePromise;
         }
 
-        scheduleCachePromise = (async () => {
+        const loadFreshSchedule = async () => {
+            try {
+                await internalPlayout?.waitForCompletion();
+                const result = await loadInternalSchedulePayload(internalScheduleOptions);
+                diagnostics.internalSchedule = result.diagnostics;
+                scheduleCache = {
+                    expiresAt: Date.now() +
+                        getScheduleCacheTtlMs(
+                            result.payload,
+                            INTERNAL_SCHEDULE_CACHE_MAX_TTL_MS
+                        ),
+                    payload: result.payload,
+                };
+                return result.payload;
+            } catch (error) {
+                diagnostics.internalSchedule.lastError =
+                    error instanceof Error ? error.message : String(error);
+                throw error;
+            }
+        };
+
+        if (bypassCache) {
+            return loadFreshSchedule();
+        }
+
+        scheduleCachePromise = loadFreshSchedule();
+        try {
+            return await scheduleCachePromise;
+        } finally {
+            scheduleCachePromise = null;
+        }
+    } : async ({ bypassCache = false } = {}) => {
+        const now = Date.now();
+        if (!bypassCache && scheduleCache && scheduleCache.expiresAt > now) {
+            return scheduleCache.payload;
+        }
+
+        if (!bypassCache && scheduleCachePromise) {
+            return scheduleCachePromise;
+        }
+
+        const loadFreshSchedule = async () => {
             const response = await fetch(scheduleXmlUrl.toString(), {
                 headers: {
                     "accept-encoding": "identity",
@@ -591,13 +643,19 @@ export function createApp(options: CreateAppOptions) {
             const payload = normalizeScheduleXml(xmlText, new Date());
 
             scheduleCache = {
-                expiresAt: Date.now() + Math.min(payload.refreshAfterMs, 30_000),
+                expiresAt: Date.now() +
+                    getScheduleCacheTtlMs(payload, XMLTV_SCHEDULE_CACHE_MAX_TTL_MS),
                 payload,
             };
 
             return payload;
-        })();
+        };
 
+        if (bypassCache) {
+            return loadFreshSchedule();
+        }
+
+        scheduleCachePromise = loadFreshSchedule();
         try {
             return await scheduleCachePromise;
         } finally {
@@ -605,11 +663,11 @@ export function createApp(options: CreateAppOptions) {
         }
     });
 
-    const loadSchedulePayload: ScheduleLoader = async () => {
+    const loadSchedulePayload: ScheduleLoader = async (loadOptions = {}) => {
         const startedAtMs = Date.now();
 
         try {
-            const payload = await baseLoadSchedulePayload();
+            const payload = await baseLoadSchedulePayload(loadOptions);
             diagnostics.schedule.lastSuccessAt = new Date().toISOString();
             diagnostics.schedule.lastFailureMessage = null;
             diagnostics.schedule.lastDurationMs = Date.now() - startedAtMs;
@@ -851,9 +909,11 @@ export function createApp(options: CreateAppOptions) {
         res.json({ ok: true });
     });
 
-    app.get("/api/schedule", async (_req: Request, res: Response) => {
+    app.get("/api/schedule", async (req: Request, res: Response) => {
         try {
-            const payload = await loadSchedulePayload();
+            const payload = await loadSchedulePayload({
+                bypassCache: requestBypassesScheduleCache(req),
+            });
             setNoCacheHeaders(res);
             return res.json(payload);
         } catch {
