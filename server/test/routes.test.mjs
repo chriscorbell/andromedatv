@@ -320,7 +320,7 @@ test("schedule endpoint serves an internal preview from allowlisted media assets
         assert.equal(scheduleResponse.status, 200);
         assert.deepEqual(
             scheduleResponse.body.schedule.map((item) => item.title).slice(0, 3),
-            ["Allowed Series", "01-first", "Allowed Series"]
+            ["Allowed Series", "Allowed Series", "Allowed Series"]
         );
         assert.deepEqual(scheduleResponse.body.schedule[0], {
             episode: "episode-01",
@@ -330,8 +330,12 @@ test("schedule endpoint serves an internal preview from allowlisted media assets
             time: "live",
             title: "Allowed Series",
         });
-        assert.equal(scheduleResponse.body.schedule[1].startAt, "2026-03-14T12:30:00.000Z");
-        assert.equal(scheduleResponse.body.schedule[1].stopAt, "2026-03-14T12:30:30.000Z");
+        assert.equal(
+            scheduleResponse.body.schedule.some((item) => item.title === "01-first"),
+            false
+        );
+        assert.equal(scheduleResponse.body.schedule[1].startAt, "2026-03-14T12:30:30.000Z");
+        assert.equal(scheduleResponse.body.schedule[1].stopAt, "2026-03-14T13:00:30.000Z");
 
         const persistedAssets = await context.db.all(
             "SELECT role, series_title, title, duration_seconds, video_codec, audio_codec FROM media_assets ORDER BY role, title"
@@ -1542,12 +1546,17 @@ test("internal playout advances schedule only after confirmed media completion",
             },
         });
 
-        async function currentScheduleTitles() {
+        async function currentSchedulePayload() {
             const response = await request(app)
                 .get("/api/schedule");
 
             assert.equal(response.status, 200);
-            return response.body.schedule.map((item) => item.title);
+            return response.body;
+        }
+
+        async function currentScheduleTitles() {
+            const payload = await currentSchedulePayload();
+            return payload.schedule.map((item) => item.title);
         }
 
         async function channelStateSnapshot() {
@@ -1585,23 +1594,28 @@ test("internal playout advances schedule only after confirmed media completion",
 
         assert.deepEqual(
             (await currentScheduleTitles()).slice(0, 4),
-            ["Alpha Series", "01-first-bump", "Beta Series", "02-second-bump"]
+            ["Alpha Series", "Beta Series", "Alpha Series", "Beta Series"]
         );
         assert.deepEqual(
             (await currentScheduleTitles()).slice(0, 2),
-            ["Alpha Series", "01-first-bump"]
+            ["Alpha Series", "Beta Series"]
         );
 
         await completeCurrentAsset("episode-01");
+        const bumpHiddenSchedule = await currentSchedulePayload();
+        assert.equal(bumpHiddenSchedule.schedule[0]?.title, "Beta Series");
+        assert.equal(bumpHiddenSchedule.schedule[0]?.live, false);
+        assert.equal(bumpHiddenSchedule.schedule[0]?.startAt, "2026-03-14T12:00:30.000Z");
+        assert.equal(bumpHiddenSchedule.refreshAfterMs, 31000);
         assert.deepEqual(
-            (await currentScheduleTitles()).slice(0, 3),
-            ["01-first-bump", "Beta Series", "02-second-bump"]
+            bumpHiddenSchedule.schedule.map((item) => item.title).slice(0, 3),
+            ["Beta Series", "Alpha Series", "Beta Series"]
         );
 
         await completeCurrentAsset("01-first-bump");
         assert.deepEqual(
             (await currentScheduleTitles()).slice(0, 4),
-            ["Beta Series", "02-second-bump", "Alpha Series", "01-first-bump"]
+            ["Beta Series", "Alpha Series", "Beta Series", "Alpha Series"]
         );
         assert.deepEqual(
             await context.db.all(
@@ -1623,7 +1637,7 @@ test("internal playout advances schedule only after confirmed media completion",
         await completeCurrentAsset("02-second-bump");
         assert.deepEqual(
             (await currentScheduleTitles()).slice(0, 3),
-            ["Alpha Series", "01-first-bump", "Beta Series"]
+            ["Alpha Series", "Beta Series", "Alpha Series"]
         );
         assert.deepEqual(
             await context.db.all(
@@ -1636,7 +1650,7 @@ test("internal playout advances schedule only after confirmed media completion",
         await completeCurrentAsset("01-first-bump");
         assert.deepEqual(
             (await currentScheduleTitles()).slice(0, 3),
-            ["Beta Series", "02-second-bump", "Alpha Series"]
+            ["Beta Series", "Alpha Series", "Beta Series"]
         );
         assert.deepEqual(
             await context.db.all(

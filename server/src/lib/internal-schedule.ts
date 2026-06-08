@@ -1670,27 +1670,36 @@ export async function loadInternalSchedulePayload(
     const cursorRows = await loadCursorRows(options.db);
     const episodesBySeries = groupEpisodesBySeries(episodes);
     const cursor = createPlayoutCursor(state, cursorRows);
-    const schedule = [];
+    const schedule: SchedulePayload["schedule"] = [];
     let cursorTime = now;
+    let firstPlayoutStopAt: Date | undefined;
+    let playoutSteps = 0;
+    const maxPlayoutSteps = 100;
 
-    while (schedule.length < 25) {
+    while (schedule.length < 25 && playoutSteps < maxPlayoutSteps) {
         const asset = resolveCurrentAsset(cursor, rotationRows, episodesBySeries, bumps);
         if (!asset) {
             break;
         }
 
         const stopAt = addSeconds(cursorTime, asset.duration_seconds || 0);
-        schedule.push({
-            ...(asset.summary ? { description: asset.summary } : {}),
-            ...(asset.role === "episode" ? { episode: asset.title } : {}),
-            live: schedule.length === 0,
-            startAt: cursorTime.toISOString(),
-            stopAt: stopAt.toISOString(),
-            ...(schedule.length === 0 ? { time: "live" } : {}),
-            title: asset.role === "episode" && asset.series_title ? asset.series_title : asset.title,
-        });
+        if (!firstPlayoutStopAt) {
+            firstPlayoutStopAt = stopAt;
+        }
+        if (asset.role === "episode") {
+            schedule.push({
+                ...(asset.summary ? { description: asset.summary } : {}),
+                episode: asset.title,
+                live: playoutSteps === 0,
+                startAt: cursorTime.toISOString(),
+                stopAt: stopAt.toISOString(),
+                ...(playoutSteps === 0 ? { time: "live" } : {}),
+                title: asset.series_title || asset.title,
+            });
+        }
         cursorTime = stopAt;
         advancePlayoutCursor(cursor, asset, rotationRows, episodesBySeries, bumps);
+        playoutSteps += 1;
     }
 
     return {
@@ -1698,7 +1707,7 @@ export async function loadInternalSchedulePayload(
         payload: {
             fetchedAt: now.toISOString(),
             refreshAfterMs: computeScheduleRefreshDelay(now, {
-                stop: schedule[0]?.stopAt ? new Date(schedule[0].stopAt) : undefined,
+                stop: firstPlayoutStopAt,
             }),
             schedule,
         },

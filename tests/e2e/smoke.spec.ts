@@ -4,15 +4,17 @@ test('homepage loads and expanded schedule details are visible', async ({ page }
   await page.goto('/')
 
   await expect(page.getByRole('img', { name: 'andromeda' })).toBeVisible()
-  await expect(page.getByText('schedule')).toBeVisible()
+  await expect(page.getByText('schedule', { exact: true })).toBeVisible()
 
   const acceptanceSeriesButton = page.getByRole('button', {
-    name: /acceptance series/i,
+    name: /acceptance series.*live/i,
   })
   await expect(acceptanceSeriesButton).toBeVisible()
   await acceptanceSeriesButton.click()
 
-  await expect(page.getByText('episode-01')).toBeVisible()
+  await expect(
+    page.locator('.schedule-details[data-expanded="true"]').getByText('episode-01'),
+  ).toBeVisible()
 })
 
 test('internal playback acceptance uses the generated schedule and HLS route', async ({
@@ -28,9 +30,14 @@ test('internal playback acceptance uses the generated schedule and HLS route', a
 
   await page.goto('/')
 
-  await expect(page.getByRole('button', { name: /acceptance series/i })).toBeVisible()
-  await page.getByRole('button', { name: /acceptance series/i }).click()
-  await expect(page.getByText('episode-01')).toBeVisible()
+  const liveAcceptanceSeriesButton = page.getByRole('button', {
+    name: /acceptance series.*live/i,
+  })
+  await expect(liveAcceptanceSeriesButton).toBeVisible()
+  await liveAcceptanceSeriesButton.click()
+  await expect(
+    page.locator('.schedule-details[data-expanded="true"]').getByText('episode-01'),
+  ).toBeVisible()
 
   const hlsResponse = await hlsResponsePromise
   expect(hlsResponse.headers()['content-type']).toMatch(/mpegurl/)
@@ -49,12 +56,15 @@ test('internal playback acceptance uses the generated schedule and HLS route', a
     .poll(async () => {
       const response = await request.get('/api/schedule')
       const payload = await response.json()
-      return payload.schedule[0]?.title
+      return payload.schedule[0]?.episode
     })
-    .toBe('01-bump')
+    .toBe('episode-02')
 
   await page.reload()
-  await expect(page.getByRole('button', { name: /01-bump/i })).toBeVisible()
+  await expect(page.getByText('01-bump')).toBeHidden()
+  await expect(
+    page.locator('.schedule-row').filter({ hasText: 'Acceptance Series' }).first(),
+  ).toBeVisible()
 
   const bumpHlsResponse = await request.get('/iptv/session/1/hls.m3u8')
   expect(bumpHlsResponse.ok()).toBe(true)
@@ -66,17 +76,19 @@ test('internal playback acceptance uses the generated schedule and HLS route', a
     .poll(async () => {
       const response = await request.get('/api/schedule')
       const payload = await response.json()
-      return payload.schedule[0]?.episode
+      return payload.schedule[0]?.live
     })
-    .toBe('episode-02')
+    .toBe(true)
 
   await page.reload()
   const nextEpisodeButton = page.getByRole('button', {
-    name: /acceptance series/i,
+    name: /acceptance series.*live/i,
   })
   await expect(nextEpisodeButton).toBeVisible()
   await nextEpisodeButton.click()
-  await expect(page.getByText('episode-02')).toBeVisible()
+  await expect(
+    page.locator('.schedule-details[data-expanded="true"]').getByText('episode-02'),
+  ).toBeVisible()
 })
 
 test('chat register flow works and user can sign out again', async ({ page }, testInfo) => {
