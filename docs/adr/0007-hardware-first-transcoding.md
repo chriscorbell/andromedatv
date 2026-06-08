@@ -1,0 +1,3 @@
+# Hardware-first transcoding
+
+AndromedaTV will target Hardware Transcoding on the production server's Intel Arc A310 GPU for its Uniform HLS Profile, with CPU transcoding as a fallback rather than the preferred path. Transcode Acceleration Mode will be configurable so production can require hardware acceleration and fail closed when it is unavailable, while development and tests can prefer or disable hardware acceleration. This keeps the channel viable for continuous 24/7 operation while making container runtime support for ffmpeg, GPU device access, and Intel media drivers part of the deployment design.
