@@ -366,7 +366,22 @@ export function createInternalPlayout(options: InternalPlayoutOptions) {
         transcodeAccelerationMode: transcodeAcceleration.mode,
     };
 
-    async function ensureLiveHls() {
+    let ensureInFlight: Promise<ActivePlayout> | null = null;
+
+    // Concurrent callers (e.g. simultaneous first-init requests) must share a
+    // single transcode: otherwise each would write the same playlist file at
+    // once and a response streaming that file could observe it mid-rewrite.
+    function ensureLiveHls(): Promise<ActivePlayout> {
+        if (ensureInFlight) {
+            return ensureInFlight;
+        }
+        ensureInFlight = runEnsureLiveHls().finally(() => {
+            ensureInFlight = null;
+        });
+        return ensureInFlight;
+    }
+
+    async function runEnsureLiveHls() {
         const { mediaAsset } = await loadCurrentInternalMediaAsset(scheduleOptions(options));
         const now = getCurrentDate(options);
         const canSeekMediaAsset = options.canSeekMediaAsset || (() => true);

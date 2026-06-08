@@ -14,7 +14,7 @@
         "start": "node dist/index.js",
         "seed:jellyfin-metadata": "bun run build && node dist/scripts/seed-anidb-from-jellyfin.js",
         "test": "bun run build && bun run test:run",
-        "test:run": "node --test test/*.test.mjs"
+        "test:run": "node --test --test-concurrency=1 test/*.test.mjs"
     },
     "dependencies": {
         "bcryptjs": "^2.4.3",

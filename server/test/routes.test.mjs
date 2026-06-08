@@ -19,6 +19,19 @@ function wait(ms) {
     });
 }
 
+async function waitFor(predicate, { timeout = 2000, interval = 5, label = "condition" } = {}) {
+    const deadline = Date.now() + timeout;
+    for (;;) {
+        if (await predicate()) {
+            return;
+        }
+        if (Date.now() >= deadline) {
+            throw new Error(`Timed out after ${timeout}ms waiting for ${label}`);
+        }
+        await wait(interval);
+    }
+}
+
 async function createTestContext(overrides = {}) {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "andromeda-routes-test-"));
     const dbPath = path.join(tempDir, "andromeda.db");
@@ -88,7 +101,9 @@ class FakePlayoutProcess extends EventEmitter {
 
 function getHttpStatus(url) {
     return new Promise((resolve, reject) => {
-        const req = http.get(url, (res) => {
+        // agent: false forces a fresh socket per request so concurrent calls
+        // can't crowd a reused keep-alive socket and trip a response parse error.
+        const req = http.get(url, { agent: false }, (res) => {
             res.resume();
             res.on("end", () => {
                 resolve(res.statusCode);
@@ -1529,14 +1544,37 @@ test("internal playout advances schedule only after confirmed media completion",
             return response.body.schedule.map((item) => item.title);
         }
 
-        async function completeCurrentAsset(expectedTitle) {
-            const response = await request(app)
-                .get("/iptv/session/1/hls.m3u8");
+        async function channelStateSnapshot() {
+            const rows = await context.db.all(
+                "SELECT current_rotation_index, bump_cursor, current_media_role FROM channel_state"
+            );
+            return JSON.stringify(rows);
+        }
 
-            assert.equal(response.status, 200);
-            assert.equal(transcodeRequests.at(-1)?.title, expectedTitle);
+        async function completeCurrentAsset(expectedTitle) {
+            // Polling the playlist is idempotent while an asset is active, so this
+            // waits for the previous asset's completion to advance the schedule
+            // rather than racing it with a fixed sleep.
+            await waitFor(
+                async () => {
+                    const response = await request(app)
+                        .get("/iptv/session/1/hls.m3u8");
+
+                    assert.equal(response.status, 200);
+                    return transcodeRequests.at(-1)?.title === expectedTitle;
+                },
+                { label: `transcode of ${expectedTitle}` }
+            );
+
+            // Completion advances the schedule asynchronously via the process exit
+            // handler; wait for the persisted channel state to settle before the
+            // caller asserts on the post-advancement schedule.
+            const before = await channelStateSnapshot();
             playoutProcesses.at(-1).emit("exit", 0, null);
-            await wait(25);
+            await waitFor(
+                async () => (await channelStateSnapshot()) !== before,
+                { label: `schedule to advance past ${expectedTitle}` }
+            );
         }
 
         assert.deepEqual(
@@ -1676,7 +1714,13 @@ test("status diagnostics remove disconnected public stream clients", async () =>
         assert.equal(connectedStatus.body.chat.publicClients, 1);
 
         controller.abort();
-        await wait(25);
+        await waitFor(
+            async () => {
+                const status = await adminAgent.get("/api/status");
+                return status.body.chat.publicClients === 0;
+            },
+            { label: "public stream client to disconnect" }
+        );
 
         const disconnectedStatus = await adminAgent
             .get("/api/status");
