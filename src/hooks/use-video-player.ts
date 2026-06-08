@@ -153,7 +153,7 @@ export function useVideoPlayer() {
     let playbackStarted = false
     let playbackStartedOnce = false
     let disposed = false
-    let hlsSupportKnown = supportsNativeHls
+    let hlsJsSupported = false
     let activePlaybackAttempt:
       | {
           attempt: number
@@ -280,7 +280,7 @@ export function useVideoPlayer() {
         return null
       }
 
-      hlsSupportKnown = Boolean(ctor)
+      hlsJsSupported = Boolean(ctor)
       return ctor
     }
 
@@ -288,7 +288,7 @@ export function useVideoPlayer() {
       `${HLS_URL}${HLS_URL.includes('?') ? '&' : '?'}ts=${Date.now()}`
 
     const scheduleStartupRestart = (delay = 12_000) => {
-      if (!supportsNativeHls && !hlsSupportKnown) {
+      if (!supportsNativeHls && !hlsJsSupported) {
         return
       }
 
@@ -367,12 +367,7 @@ export function useVideoPlayer() {
       clearRestartTimer()
       clearStartupRestartTimer()
       hlsRestartTimeoutRef.current = window.setTimeout(() => {
-        if (supportsNativeHls) {
-          startNativeStream('Automatic recovery restart')
-          return
-        }
-
-        void startHls('Automatic recovery restart')
+        void startBestAvailableStream('Automatic recovery restart')
       }, delay)
     }
 
@@ -399,7 +394,10 @@ export function useVideoPlayer() {
       scheduleStartupRestart()
     }
 
-    const startHls = async (detail = 'Starting hls.js playback') => {
+    const startHls = async (
+      detail = 'Starting hls.js playback',
+      hlsImpl?: HlsCtor,
+    ) => {
       playbackStarted = false
       manifestLoaded = false
       beginPlaybackAttempt(
@@ -415,8 +413,12 @@ export function useVideoPlayer() {
       clearStartupRestartTimer()
       destroyHls()
 
-      const HlsImpl = await loadHlsCtor()
+      const HlsImpl = hlsImpl ?? (await loadHlsCtor())
       if (!HlsImpl || disposed) {
+        failPlaybackAttempt('hls.js is not supported in this browser.')
+        if (supportsNativeHls && !disposed) {
+          startNativeStream('Falling back to native HLS playback')
+        }
         return
       }
 
@@ -498,6 +500,24 @@ export function useVideoPlayer() {
       })
 
       hls.attachMedia(video)
+    }
+
+    const startBestAvailableStream = async (
+      detail = 'Starting live playback',
+    ) => {
+      const HlsImpl = await loadHlsCtor()
+      if (HlsImpl) {
+        await startHls(detail, HlsImpl)
+        return
+      }
+
+      if (supportsNativeHls && !disposed) {
+        startNativeStream(detail)
+        return
+      }
+
+      failPlaybackAttempt('No supported HLS playback transport was available.')
+      markOffline('This browser cannot play the live stream.')
     }
 
     const nudgePlayback = () => {
@@ -591,12 +611,7 @@ export function useVideoPlayer() {
       clearPlaybackRetryTimer()
       clearStartupRestartTimer()
 
-      if (supportsNativeHls) {
-        startNativeStream('Manual retry')
-        return
-      }
-
-      void startHls('Manual retry')
+      void startBestAvailableStream('Manual retry')
     }
 
     video.addEventListener('loadedmetadata', handleReady)
@@ -607,11 +622,7 @@ export function useVideoPlayer() {
     video.addEventListener('stalled', handleWaiting)
     document.addEventListener('visibilitychange', handleVisibilityChange)
 
-    if (supportsNativeHls) {
-      startNativeStream('Initial player startup')
-    } else {
-      void startHls('Initial player startup')
-    }
+    void startBestAvailableStream('Initial player startup')
     schedulePlaybackWatchdog()
 
     return () => {

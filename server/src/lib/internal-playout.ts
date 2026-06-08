@@ -382,6 +382,10 @@ export function createInternalPlayout(options: InternalPlayoutOptions) {
     }
 
     async function runEnsureLiveHls() {
+        if (active && await pathExists(active.playlistPath)) {
+            return active;
+        }
+
         const { mediaAsset } = await loadCurrentInternalMediaAsset(scheduleOptions(options));
         const now = getCurrentDate(options);
         const canSeekMediaAsset = options.canSeekMediaAsset || (() => true);

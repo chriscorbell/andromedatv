@@ -1118,6 +1118,7 @@ test("internal IPTV route serves generated live HLS output", async () => {
         await fs.mkdir(path.dirname(episodePath), { recursive: true });
         await fs.mkdir(bumpsRoot, { recursive: true });
         await fs.writeFile(episodePath, "fixture");
+        let mediaProbeCount = 0;
 
         const app = createApp({
             corsOrigin: "*",
@@ -1131,11 +1132,14 @@ test("internal IPTV route serves generated live HLS output", async () => {
                 hlsOutputRoot,
                 seriesAllowlist: ["Allowed Series"],
                 seriesRoot,
-                probeMediaAsset: async () => ({
-                    durationSeconds: 1800,
-                    videoCodec: "h264",
-                    audioCodec: "aac",
-                }),
+                probeMediaAsset: async () => {
+                    mediaProbeCount += 1;
+                    return {
+                        durationSeconds: 1800,
+                        videoCodec: "h264",
+                        audioCodec: "aac",
+                    };
+                },
                 random: () => 0,
                 now: () => new Date("2026-03-14T12:00:00.000Z"),
                 transcodeLiveHls: async ({ mediaAsset, outputRoot }) => {
@@ -1157,12 +1161,14 @@ test("internal IPTV route serves generated live HLS output", async () => {
         assert.equal(playlistResponse.status, 200);
         assert.match(playlistResponse.headers["content-type"], /mpegurl|application\/vnd\.apple\.mpegurl/);
         assert.match(playlistResponse.text, /segment-00001\.ts/);
+        assert.equal(mediaProbeCount, 1);
 
         const segmentResponse = await request(app)
             .get("/iptv/session/1/segment-00001.ts");
 
         assert.equal(segmentResponse.status, 200);
         assert.equal(Buffer.from(segmentResponse.body).toString("utf8"), "segment-data");
+        assert.equal(mediaProbeCount, 1);
     } finally {
         await fs.rm(libraryRoot, { recursive: true, force: true });
         await fs.rm(hlsOutputRoot, { recursive: true, force: true });
