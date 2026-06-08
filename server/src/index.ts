@@ -14,7 +14,7 @@ const ERSATZTV_BASE_URL = process.env.ERSATZTV_BASE_URL || "";
 const PUBLIC_APP_ORIGIN = process.env.PUBLIC_APP_ORIGIN || "";
 const STATUS_API_MODE = process.env.STATUS_API_MODE || "admin";
 const TRUST_PROXY = process.env.TRUST_PROXY || "";
-const PLAYOUT_MODE = process.env.PLAYOUT_MODE || "ersatztv";
+const PLAYOUT_MODE = process.env.PLAYOUT_MODE || "internal";
 const ANDROMEDA_SERIES_ROOT =
     process.env.ANDROMEDA_SERIES_ROOT || "/nas/media/andromeda/series";
 const ANDROMEDA_BUMPS_ROOT =

@@ -10,5 +10,13 @@ services:
       - "3834:3001"
     env_file:
       - .env
+    # Internal playout (default) needs read access to the media library. Hardware
+    # transcoding (TRANSCODE_ACCEL=preferred|required) also needs the Intel render
+    # device. Drop the devices/group_add block if you run TRANSCODE_ACCEL=disabled.
+    devices:
+      - /dev/dri:/dev/dri
+    group_add:
+      - "27" # host "render" group that owns /dev/dri/renderD128
     volumes:
       - ./data:/data
+      - /nas/media/andromeda:/nas/media/andromeda:ro

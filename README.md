@@ -20,7 +20,7 @@ The app is served from one origin and one process:
 - `/` -> SPA frontend
 - `/api/chat/*` -> chat API + SSE
 - `/api/schedule` -> normalized schedule API
-- `/iptv/*` -> HLS/IPTV compatibility route backed by ErsatzTV or internal playout mode
+- `/iptv/*` -> HLS/IPTV compatibility route backed by internal playout (default) or the legacy ErsatzTV proxy
 
 ### Local frontend scripts
 
@@ -65,21 +65,21 @@ Node + Express + SQLite
 In a dedicated directory, create `.env` from `.env.example` and set:
 
 ```
-PLAYOUT_MODE=ersatztv # Optional - "ersatztv" (default) or "internal"
+PLAYOUT_MODE=internal # Optional - "internal" (default, self-hosted playout) or "ersatztv" (legacy proxy)
 
-ERSATZTV_BASE_URL=http://your-ersatztv-host:8409 # Required when PLAYOUT_MODE=ersatztv
+ANDROMEDA_SERIES_ROOT=/nas/media/andromeda/series # Series root scanned for Episode Assets
 
-ANDROMEDA_SERIES_ROOT=/nas/media/andromeda/series # Used when PLAYOUT_MODE=internal
+ANDROMEDA_BUMPS_ROOT=/nas/media/andromeda/bumps # Bumps root scanned for filename-sorted Bump Assets
 
-ANDROMEDA_BUMPS_ROOT=/nas/media/andromeda/bumps # Used when PLAYOUT_MODE=internal
-
-ANDROMEDA_SERIES_ALLOWLIST= # Optional comma-separated Series Allowlist for internal playout
+ANDROMEDA_SERIES_ALLOWLIST= # Optional comma-separated Series Allowlist; leave empty for full-library production
 
 INTERNAL_HLS_OUTPUT_ROOT=/data/hls # Optional HLS playlist/segment output root for internal playout
 
 TRANSCODE_ACCEL=disabled # Optional - "disabled" (default), "preferred", or "required"
 
 TRANSCODE_ACCEL_DEVICE=/dev/dri/renderD128 # Intel render device used when TRANSCODE_ACCEL is preferred or required
+
+ERSATZTV_BASE_URL= # Required only when PLAYOUT_MODE=ersatztv (legacy proxy mode)
 
 INITIAL_ADMIN_NICKNAME=andromedatv # Required - bootstraps the first admin if none exists
 
@@ -98,6 +98,8 @@ JWT_SECRET=replace_me # Optional - if omitted, the app will generate and persist
 DB_PATH=/data/andromeda.db # Optional - default database path
 
 ```
+
+AndromedaTV defaults to internal playout mode and has no external runtime dependency on ErsatzTV or Jellyfin. Internal mode owns the schedule, transcode, and Live HLS output directly from the local media Library. The legacy ErsatzTV proxy is opt-in via `PLAYOUT_MODE=ersatztv` (which then requires `ERSATZTV_BASE_URL`); Jellyfin is only read by the one-time offline metadata seed below, never at runtime.
 
 The admin bootstrap only runs when there are no admin users in the database. After the first admin exists, those variables are ignored unless you reset the chat DB.
 
@@ -155,13 +157,24 @@ services:
     container_name: andromedatv
     image: ghcr.io/chriscorbell/andromedatv:latest
     restart: unless-stopped
+    user: "1000:1000" # must own the /data bind mount
     ports:
       - "3834:3001"
     env_file:
       - .env
+    # Internal playout needs read access to the media library. Hardware transcoding
+    # (TRANSCODE_ACCEL=preferred|required) also needs the Intel render device — drop
+    # the devices/group_add block if you run TRANSCODE_ACCEL=disabled.
+    devices:
+      - /dev/dri:/dev/dri
+    group_add:
+      - "27" # host group that owns /dev/dri/renderD128 (check with: getent group render)
     volumes:
       - ./data:/data
+      - /nas/media/andromeda:/nas/media/andromeda:ro
 ```
+
+The container runs as UID 1000, so the host `./data` directory must be owned by `1000:1000` (`sudo chown -R 1000:1000 ./data`). The media bind mount is read-only.
 
 Then run:
 
