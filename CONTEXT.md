@@ -27,6 +27,9 @@ _Avoid_: Arbitrary library inference
 **Media Asset**:
 One playable local file plus its discovered facts and intended role in the channel.
 
+**Media Asset Identity**:
+The persisted Media Asset id used by the Playout Queue and Playout Completion to decide whether two queue observations refer to the same playable item. File paths are reconciliation evidence, not Playout Queue identity.
+
 **Episode Asset**:
 A Media Asset that belongs to an anime series and may resolve to AniDB episode metadata.
 
