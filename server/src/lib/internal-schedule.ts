@@ -1243,6 +1243,49 @@ export async function refreshInternalLibrary(
 // Projects the current schedule purely from persisted DB state — no scan, no
 // ffprobe. Cheap enough to run on every request. On an empty DB it returns an
 // empty schedule so the client falls back to its built-in lineup.
+// Anchors the schedule timeline to the asset that is actually playing. The live
+// asset began at its persisted playout_history start (minus any resume offset),
+// not "now", so projecting from `now` would shift every boundary forward by the
+// elapsed play time and make refreshAfterMs outlive the real transition. Falls
+// back to `now` when there is no matching active playout (e.g. cold start).
+async function resolvePlayoutAnchor(
+    db: Database,
+    currentAsset: PlayoutQueueAsset | null,
+    now: Date
+): Promise<Date> {
+    if (!currentAsset || !(currentAsset.durationSeconds > 0)) {
+        return now;
+    }
+
+    const active = await db.get<{
+        media_file_path: string;
+        started_at: string;
+        start_offset_seconds: number;
+    }>(
+        "SELECT media_file_path, started_at, start_offset_seconds FROM playout_history " +
+        "WHERE completed_at IS NULL ORDER BY started_at DESC, id DESC LIMIT 1"
+    );
+    if (!active || active.media_file_path !== currentAsset.filePath) {
+        return now;
+    }
+
+    const startedAtMs = Date.parse(active.started_at);
+    if (!Number.isFinite(startedAtMs)) {
+        return now;
+    }
+
+    const offsetSeconds = Number(active.start_offset_seconds) || 0;
+    const virtualStartMs = startedAtMs - offsetSeconds * 1000;
+    const realStopMs = virtualStartMs + currentAsset.durationSeconds * 1000;
+    // The asset has nominally finished but playout hasn't advanced yet; treating
+    // it as freshly started avoids emitting boundaries in the past.
+    if (realStopMs <= now.getTime()) {
+        return now;
+    }
+    // Never anchor in the future (clock skew); the live item must contain `now`.
+    return new Date(Math.min(virtualStartMs, now.getTime()));
+}
+
 export async function projectInternalSchedulePayload(
     options: InternalScheduleOptions
 ): Promise<{ payload: SchedulePayload }> {
@@ -1259,9 +1302,14 @@ export async function projectInternalSchedulePayload(
         episodes,
         bumps
     );
+    const anchor = await resolvePlayoutAnchor(
+        options.db,
+        getCurrentPlayoutQueueItem(snapshot),
+        now
+    );
     const steps = previewPlayoutQueue(snapshot, {
         maxSteps: 100,
-        startAt: now,
+        startAt: anchor,
     });
     const schedule: SchedulePayload["schedule"] = [];
     const firstPlayoutStopAt = steps[0]?.stopAt;

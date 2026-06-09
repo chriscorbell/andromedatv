@@ -529,6 +529,78 @@ test("internal schedule route projects without scanning until inventory is refre
     }
 });
 
+test("internal schedule anchors the live item to the actual playout start time", async () => {
+    const context = await createTestContext();
+    const libraryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "andromeda-library-test-"));
+
+    try {
+        const seriesRoot = path.join(libraryRoot, "series");
+        const bumpsRoot = path.join(libraryRoot, "bumps");
+        await fs.mkdir(path.join(seriesRoot, "Anchor Series"), { recursive: true });
+        await fs.mkdir(bumpsRoot, { recursive: true });
+        await fs.writeFile(path.join(seriesRoot, "Anchor Series", "episode-01.mp4"), "fixture");
+        await fs.writeFile(path.join(seriesRoot, "Anchor Series", "episode-02.mp4"), "fixture");
+
+        const app = createApp({
+            corsOrigin: "*",
+            db: context.db,
+            ersatzBaseUrl: new URL("http://127.0.0.1:8409"),
+            jwtSecret: "test-secret",
+            serveStatic: false,
+            statusApiMode: "public",
+            internalSchedule: {
+                bumpsRoot,
+                seriesAllowlist: ["Anchor Series"],
+                seriesRoot,
+                probeMediaAsset: async () => ({
+                    durationSeconds: 600,
+                    videoCodec: "h264",
+                    audioCodec: "aac",
+                }),
+                random: () => 0,
+                now: () => new Date("2026-03-14T12:00:00.000Z"),
+            },
+        });
+
+        await app.locals.refreshInventory();
+
+        // The current episode began 9 minutes ago (10-minute runtime), so it is
+        // live with one minute remaining.
+        const currentEpisode = await context.db.get(
+            "SELECT id, file_path FROM media_assets WHERE role = 'episode' ORDER BY chronological_order LIMIT 1"
+        );
+        await context.db.run(
+            "INSERT INTO playout_history " +
+            "(media_asset_id, media_file_path, media_title, media_role, started_at, start_offset_seconds, created_at) " +
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            currentEpisode.id,
+            currentEpisode.file_path,
+            "episode-01",
+            "episode",
+            "2026-03-14T11:51:00.000Z",
+            0,
+            "2026-03-14T11:51:00.000Z"
+        );
+
+        const response = await request(app)
+            .get("/api/schedule")
+            .expect(200);
+
+        // The live item is anchored to its real start, not "now".
+        assert.equal(response.body.schedule[0].live, true);
+        assert.equal(response.body.schedule[0].startAt, "2026-03-14T11:51:00.000Z");
+        assert.equal(response.body.schedule[0].stopAt, "2026-03-14T12:01:00.000Z");
+        // The next item chains from the real boundary...
+        assert.equal(response.body.schedule[1].startAt, "2026-03-14T12:01:00.000Z");
+        // ...and refreshAfterMs reflects the real remaining time (~1 min), so the
+        // cache and client re-poll align with the actual transition.
+        assert.equal(response.body.refreshAfterMs, 61_000);
+    } finally {
+        await fs.rm(libraryRoot, { recursive: true, force: true });
+        await context.cleanup();
+    }
+});
+
 test("internal schedule resolves schedulable series from the AniDB metadata cache", async () => {
     const context = await createTestContext();
     const libraryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "andromeda-library-test-"));
