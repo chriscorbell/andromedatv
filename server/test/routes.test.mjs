@@ -314,6 +314,8 @@ test("schedule endpoint serves an internal preview from allowlisted media assets
             },
         });
 
+        await app.locals.refreshInventory();
+
         const scheduleResponse = await request(app)
             .get("/api/schedule");
 
@@ -415,6 +417,7 @@ test("internal schedule route caches repeated loads until explicitly bypassed", 
             statusApiMode: "public",
             internalSchedule: {
                 bumpsRoot,
+                seriesAllowlist: ["Cached Route Series"],
                 seriesRoot,
                 probeMediaAsset: async () => {
                     probeCount += 1;
@@ -429,6 +432,10 @@ test("internal schedule route caches repeated loads until explicitly bypassed", 
             },
         });
 
+        await app.locals.refreshInventory();
+        assert.equal(probeCount, 1);
+
+        // Requests project from persisted state without re-probing.
         await request(app)
             .get("/api/schedule")
             .expect(200);
@@ -439,11 +446,83 @@ test("internal schedule route caches repeated loads until explicitly bypassed", 
             .expect(200);
         assert.equal(probeCount, 1);
 
+        // A manual bypass rescans, but an unchanged file reuses its persisted probe facts.
+        await request(app)
+            .get("/api/schedule")
+            .set("Cache-Control", "no-cache")
+            .expect(200);
+        assert.equal(probeCount, 1);
+
+        // Modifying the file changes its size/mtime, invalidating the cached facts.
+        await fs.writeFile(
+            path.join(seriesRoot, "Cached Route Series", "episode-01.mp4"),
+            "fixture-with-modified-contents"
+        );
         await request(app)
             .get("/api/schedule")
             .set("Cache-Control", "no-cache")
             .expect(200);
         assert.equal(probeCount, 2);
+    } finally {
+        await fs.rm(libraryRoot, { recursive: true, force: true });
+        await context.cleanup();
+    }
+});
+
+test("internal schedule route projects without scanning until inventory is refreshed", async () => {
+    const context = await createTestContext();
+    const libraryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "andromeda-library-test-"));
+    let probeCount = 0;
+
+    try {
+        const seriesRoot = path.join(libraryRoot, "series");
+        const bumpsRoot = path.join(libraryRoot, "bumps");
+        await fs.mkdir(path.join(seriesRoot, "Projected Series"), { recursive: true });
+        await fs.mkdir(bumpsRoot, { recursive: true });
+        await fs.writeFile(path.join(seriesRoot, "Projected Series", "episode-01.mp4"), "fixture");
+
+        const app = createApp({
+            corsOrigin: "*",
+            db: context.db,
+            ersatzBaseUrl: new URL("http://127.0.0.1:8409"),
+            jwtSecret: "test-secret",
+            serveStatic: false,
+            statusApiMode: "public",
+            internalSchedule: {
+                bumpsRoot,
+                seriesAllowlist: ["Projected Series"],
+                seriesRoot,
+                probeMediaAsset: async () => {
+                    probeCount += 1;
+                    return {
+                        durationSeconds: 1800,
+                        videoCodec: "h264",
+                        audioCodec: "aac",
+                    };
+                },
+                random: () => 0,
+                now: () => new Date("2026-03-14T12:00:00.000Z"),
+            },
+        });
+
+        // Cold DB: the request path projects an empty schedule without probing,
+        // so the client falls back to its built-in lineup.
+        const coldResponse = await request(app)
+            .get("/api/schedule")
+            .expect(200);
+        assert.deepEqual(coldResponse.body.schedule, []);
+        assert.equal(probeCount, 0);
+
+        // Background inventory refresh populates the library...
+        await app.locals.refreshInventory();
+        assert.equal(probeCount, 1);
+
+        // ...and the next request now projects live data, still without probing.
+        const warmResponse = await request(app)
+            .get("/api/schedule")
+            .expect(200);
+        assert.equal(warmResponse.body.schedule[0]?.title, "Projected Series");
+        assert.equal(probeCount, 1);
     } finally {
         await fs.rm(libraryRoot, { recursive: true, force: true });
         await context.cleanup();
@@ -521,6 +600,8 @@ test("internal schedule resolves schedulable series from the AniDB metadata cach
                 now: () => new Date("2026-03-14T12:00:00.000Z"),
             },
         });
+
+        await app.locals.refreshInventory();
 
         const scheduleResponse = await request(app)
             .get("/api/schedule");
@@ -665,6 +746,8 @@ test("internal schedule reconciles newly schedulable series without reshuffling 
                 now: () => new Date("2026-03-14T12:00:00.000Z"),
             },
         });
+
+        await app.locals.refreshInventory();
 
         await request(app)
             .get("/api/schedule")
@@ -833,6 +916,8 @@ test("internal schedule keeps an existing episode cursor on the same media after
             },
         });
 
+        await app.locals.refreshInventory();
+
         const initialScheduleResponse = await request(app)
             .get("/api/schedule");
 
@@ -959,6 +1044,8 @@ test("internal schedule prunes a removed series from the persisted rotation and 
                 now: () => new Date("2026-03-14T12:00:00.000Z"),
             },
         });
+
+        await app.locals.refreshInventory();
 
         await request(app).get("/api/schedule").expect(200);
 
@@ -1110,6 +1197,8 @@ test("sidecar overrides take precedence over cached AniDB metadata", async () =>
                 now: () => new Date("2026-03-14T12:00:00.000Z"),
             },
         });
+
+        await app.locals.refreshInventory();
 
         const scheduleResponse = await request(app)
             .get("/api/schedule");
@@ -1683,6 +1772,8 @@ test("internal playout advances schedule only after confirmed media completion",
                 );
             }
         }
+
+        await app.locals.refreshInventory();
 
         assert.deepEqual(
             (await currentScheduleTitles()).slice(0, 4),

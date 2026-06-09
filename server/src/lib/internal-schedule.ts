@@ -27,6 +27,8 @@ import { parseSidecarOverride, SIDECAR_FILE_NAME, type SidecarOverride } from ".
 
 const execFileAsync = promisify(execFile);
 
+const PROBE_CONCURRENCY = 8;
+
 const SUPPORTED_MEDIA_EXTENSIONS = new Set([
     ".avi",
     ".m4v",
@@ -104,6 +106,8 @@ type ScannedAsset = {
     durationSeconds: number;
     videoCodec?: string | null;
     audioCodec?: string | null;
+    mtimeMs?: number | null;
+    fileSize?: number | null;
     anidbSeriesId?: number | null;
     anidbEpisodeId?: number | null;
     episodeNumber?: string | null;
@@ -412,32 +416,120 @@ async function readSidecarOverride(
     return result.sidecar;
 }
 
-async function scanMediaFile(
+type PersistedProbeFacts = {
+    mtimeMs: number | null;
+    fileSize: number | null;
+    durationSeconds: number | null;
+    videoCodec: string | null;
+    audioCodec: string | null;
+};
+
+type ScanProbeResult = {
+    facts: MediaProbeFacts | null;
+    mtimeMs: number | null;
+    fileSize: number | null;
+    probeError: unknown;
+};
+
+async function mapWithConcurrency(
+    items: string[],
+    limit: number,
+    worker: (item: string) => Promise<void>
+): Promise<void> {
+    let cursor = 0;
+    const runnerCount = Math.max(1, Math.min(limit, items.length));
+    const runners = Array.from({ length: runnerCount }, async () => {
+        while (cursor < items.length) {
+            const item = items[cursor];
+            cursor += 1;
+            await worker(item);
+        }
+    });
+    await Promise.all(runners);
+}
+
+async function loadPersistedProbeFacts(
+    db: Database
+): Promise<Map<string, PersistedProbeFacts>> {
+    const rows = await db.all<Array<{
+        file_path: string;
+        mtime_ms: number | null;
+        file_size: number | null;
+        duration_seconds: number | null;
+        video_codec: string | null;
+        audio_codec: string | null;
+    }>>(
+        "SELECT file_path, mtime_ms, file_size, duration_seconds, video_codec, audio_codec FROM media_assets"
+    );
+    const map = new Map<string, PersistedProbeFacts>();
+    for (const row of rows) {
+        map.set(row.file_path, {
+            audioCodec: row.audio_codec ?? null,
+            durationSeconds: row.duration_seconds ?? null,
+            fileSize: row.file_size ?? null,
+            mtimeMs: row.mtime_ms ?? null,
+            videoCodec: row.video_codec ?? null,
+        });
+    }
+    return map;
+}
+
+// Resolves probe facts for a single file, reusing the persisted ffprobe result
+// when the file's mtime and size are unchanged so we only spawn ffprobe for new
+// or modified media. Network stat over the NAS is far cheaper than a subprocess.
+async function resolveScanProbeFacts(
     filePath: string,
-    asset: Omit<ScannedAsset, "durationSeconds" | "videoCodec" | "audioCodec">,
-    probeMediaAsset: MediaProbe,
-    diagnostics: string[]
-): Promise<ScannedAsset | null> {
+    persisted: Map<string, PersistedProbeFacts>,
+    probeMediaAsset: MediaProbe
+): Promise<ScanProbeResult> {
+    let mtimeMs: number | null = null;
+    let fileSize: number | null = null;
+
+    try {
+        const stat = await fs.stat(filePath);
+        mtimeMs = stat.mtimeMs;
+        fileSize = stat.size;
+
+        const existing = persisted.get(filePath);
+        if (
+            existing &&
+            existing.mtimeMs !== null &&
+            existing.fileSize !== null &&
+            existing.mtimeMs === mtimeMs &&
+            existing.fileSize === fileSize &&
+            Number.isFinite(existing.durationSeconds) &&
+            (existing.durationSeconds ?? 0) > 0
+        ) {
+            return {
+                facts: {
+                    audioCodec: existing.audioCodec,
+                    durationSeconds: existing.durationSeconds as number,
+                    videoCodec: existing.videoCodec,
+                },
+                fileSize,
+                mtimeMs,
+                probeError: null,
+            };
+        }
+    } catch {
+        // Unable to stat (e.g. file vanished); fall through and let the probe
+        // surface the failure the same way the previous implementation did.
+    }
+
     try {
         const facts = await probeMediaAsset(filePath);
-        if (!Number.isFinite(facts.durationSeconds) || facts.durationSeconds <= 0) {
-            diagnostics.push(`Skipping ${filePath}: missing usable duration`);
-            return null;
-        }
-
-        return {
-            ...asset,
-            audioCodec: facts.audioCodec || null,
-            durationSeconds: facts.durationSeconds,
-            videoCodec: facts.videoCodec || null,
-        };
+        return { facts, fileSize, mtimeMs, probeError: null };
     } catch (error) {
-        diagnostics.push(
-            `Skipping ${filePath}: ${error instanceof Error ? error.message : String(error)}`
-        );
-        return null;
+        return { facts: null, fileSize, mtimeMs, probeError: error };
     }
 }
+
+type SeriesScan = {
+    seriesTitle: string;
+    seriesPath: string;
+    sidecar: SidecarOverride | null;
+    episodeEntries: EpisodeFileEntry[];
+};
 
 export async function scanInternalLibrary(options: InternalScheduleOptions) {
     const diagnostics: string[] = [];
@@ -451,11 +543,16 @@ export async function scanInternalLibrary(options: InternalScheduleOptions) {
     );
     const allowFilenameFallback = allowlist.size > 0;
     const metadataCache = await loadMetadataCache(options.db, diagnostics);
+    const persistedProbeFacts = await loadPersistedProbeFacts(options.db);
     const assets: ScannedAsset[] = [];
 
+    // Pass A — enumerate the library and collect every media file that needs probe facts.
     const seriesEntries = (await listDirectoryEntries(options.seriesRoot, diagnostics))
         .filter((entry) => entry.isDirectory())
         .sort((left, right) => naturalCompare(left.name, right.name));
+
+    const seriesScans: SeriesScan[] = [];
+    const probeTargets = new Set<string>();
 
     for (const seriesEntry of seriesEntries) {
         const seriesTitle = seriesEntry.name;
@@ -466,6 +563,39 @@ export async function scanInternalLibrary(options: InternalScheduleOptions) {
         const seriesPath = path.join(options.seriesRoot, seriesTitle);
         const sidecar = await readSidecarOverride(seriesPath, diagnostics);
         const episodeEntries = await listEpisodeFileEntries(seriesPath, diagnostics);
+        seriesScans.push({ episodeEntries, seriesPath, seriesTitle, sidecar });
+
+        for (const episodeEntry of episodeEntries) {
+            if (
+                episodeEntry.fileName !== SIDECAR_FILE_NAME &&
+                isSupportedMediaFile(episodeEntry.fileName)
+            ) {
+                probeTargets.add(episodeEntry.filePath);
+            }
+        }
+    }
+
+    const bumpEntries = (await listDirectoryEntries(options.bumpsRoot, diagnostics))
+        .filter((entry) => entry.isFile())
+        .sort((left, right) => naturalCompare(left.name, right.name));
+
+    for (const bumpEntry of bumpEntries) {
+        if (isSupportedMediaFile(bumpEntry.name)) {
+            probeTargets.add(path.join(options.bumpsRoot, bumpEntry.name));
+        }
+    }
+
+    // Pass B — probe (or reuse persisted facts for) every media file in parallel.
+    const probeResults = new Map<string, ScanProbeResult>();
+    await mapWithConcurrency([...probeTargets], PROBE_CONCURRENCY, async (filePath) => {
+        probeResults.set(
+            filePath,
+            await resolveScanProbeFacts(filePath, persistedProbeFacts, probeMediaAsset)
+        );
+    });
+
+    // Pass C — resolve metadata and emit assets/diagnostics in deterministic order.
+    for (const { seriesTitle, sidecar, episodeEntries } of seriesScans) {
         let schedulableEpisodeCount = 0;
         let playableEpisodeCount = 0;
         let lastUnresolvedReason = "no trusted chronological episode order";
@@ -475,22 +605,19 @@ export async function scanInternalLibrary(options: InternalScheduleOptions) {
                 continue;
             }
             if (!isSupportedMediaFile(episodeEntry.fileName)) {
-                if (episodeEntry.fileName !== SIDECAR_FILE_NAME) {
-                    diagnostics.push(`Skipping unsupported Episode Asset ${episodeEntry.filePath}`);
-                }
+                diagnostics.push(`Skipping unsupported Episode Asset ${episodeEntry.filePath}`);
                 continue;
             }
 
-            let facts: MediaProbeFacts;
-            try {
-                facts = await probeMediaAsset(episodeEntry.filePath);
-            } catch (error) {
+            const probe = probeResults.get(episodeEntry.filePath);
+            if (!probe || probe.facts === null) {
                 diagnostics.push(
-                    `Skipping ${episodeEntry.filePath}: ${error instanceof Error ? error.message : String(error)}`
+                    `Skipping ${episodeEntry.filePath}: ${probeErrorMessage(probe)}`
                 );
                 continue;
             }
 
+            const facts = probe.facts;
             if (!Number.isFinite(facts.durationSeconds) || facts.durationSeconds <= 0) {
                 diagnostics.push(`Skipping ${episodeEntry.filePath}: missing usable duration`);
                 continue;
@@ -525,8 +652,10 @@ export async function scanInternalLibrary(options: InternalScheduleOptions) {
                 chronologicalOrder: resolved.chronologicalOrder,
                 durationSeconds: facts.durationSeconds,
                 episodeNumber: resolved.episodeNumber,
+                fileSize: probe.fileSize,
                 filePath: episodeEntry.filePath,
                 metadataSource: resolved.metadataSource,
+                mtimeMs: probe.mtimeMs,
                 role: "episode",
                 seriesTitle: resolved.seriesTitle,
                 sortKey: episodeEntry.relativePath,
@@ -549,10 +678,6 @@ export async function scanInternalLibrary(options: InternalScheduleOptions) {
         }
     }
 
-    const bumpEntries = (await listDirectoryEntries(options.bumpsRoot, diagnostics))
-        .filter((entry) => entry.isFile())
-        .sort((left, right) => naturalCompare(left.name, right.name));
-
     for (const bumpEntry of bumpEntries) {
         const filePath = path.join(options.bumpsRoot, bumpEntry.name);
         if (!isSupportedMediaFile(bumpEntry.name)) {
@@ -560,21 +685,30 @@ export async function scanInternalLibrary(options: InternalScheduleOptions) {
             continue;
         }
 
-        const asset = await scanMediaFile(
-            filePath,
-            {
-                filePath,
-                role: "bump",
-                seriesTitle: null,
-                sortKey: bumpEntry.name,
-                title: getMediaTitle(bumpEntry.name),
-            },
-            probeMediaAsset,
-            diagnostics
-        );
-        if (asset) {
-            assets.push(asset);
+        const probe = probeResults.get(filePath);
+        if (!probe || probe.facts === null) {
+            diagnostics.push(`Skipping ${filePath}: ${probeErrorMessage(probe)}`);
+            continue;
         }
+
+        const facts = probe.facts;
+        if (!Number.isFinite(facts.durationSeconds) || facts.durationSeconds <= 0) {
+            diagnostics.push(`Skipping ${filePath}: missing usable duration`);
+            continue;
+        }
+
+        assets.push({
+            audioCodec: facts.audioCodec || null,
+            durationSeconds: facts.durationSeconds,
+            fileSize: probe.fileSize,
+            filePath,
+            mtimeMs: probe.mtimeMs,
+            role: "bump",
+            seriesTitle: null,
+            sortKey: bumpEntry.name,
+            title: getMediaTitle(filePath),
+            videoCodec: facts.videoCodec || null,
+        });
     }
 
     return {
@@ -584,6 +718,16 @@ export async function scanInternalLibrary(options: InternalScheduleOptions) {
             .sort((left, right) => naturalCompare(left.seriesTitle, right.seriesTitle)),
         unresolvedEpisodeAssets,
     };
+}
+
+function probeErrorMessage(probe: ScanProbeResult | undefined): string {
+    if (!probe) {
+        return "probe facts unavailable";
+    }
+    if (probe.probeError instanceof Error) {
+        return probe.probeError.message;
+    }
+    return String(probe.probeError ?? "probe facts unavailable");
 }
 
 function isPathWithinRoot(filePath: string, root: string): boolean {
@@ -625,8 +769,9 @@ async function persistMediaAssets(
             await db.run(
                 "INSERT INTO media_assets " +
                 "(file_path, role, series_title, title, duration_seconds, video_codec, audio_codec, sort_key, " +
-                "anidb_series_id, anidb_episode_id, episode_number, summary, air_date, chronological_order, metadata_source, updated_at) " +
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+                "anidb_series_id, anidb_episode_id, episode_number, summary, air_date, chronological_order, metadata_source, " +
+                "mtime_ms, file_size, updated_at) " +
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
                 "ON CONFLICT(file_path) DO UPDATE SET " +
                 "role = excluded.role, " +
                 "series_title = excluded.series_title, " +
@@ -642,6 +787,8 @@ async function persistMediaAssets(
                 "air_date = excluded.air_date, " +
                 "chronological_order = excluded.chronological_order, " +
                 "metadata_source = excluded.metadata_source, " +
+                "mtime_ms = excluded.mtime_ms, " +
+                "file_size = excluded.file_size, " +
                 "updated_at = excluded.updated_at",
                 asset.filePath,
                 asset.role,
@@ -658,6 +805,8 @@ async function persistMediaAssets(
                 asset.airDate || null,
                 asset.chronologicalOrder ?? null,
                 asset.metadataSource || null,
+                asset.mtimeMs ?? null,
+                asset.fileSize ?? null,
                 updatedAt
             );
         }
@@ -1073,13 +1222,32 @@ export async function advanceInternalPlayoutOnCompletion(
     return true;
 }
 
-export async function loadInternalSchedulePayload(
+// Scans the media library and reconciles channel state. This is the expensive,
+// ffprobe-driven half and is run out-of-band (boot + periodic refresh), never on
+// the request path.
+export async function refreshInternalLibrary(
     options: InternalScheduleOptions
-): Promise<{ payload: SchedulePayload; diagnostics: InternalScheduleDiagnostics }> {
+): Promise<{ diagnostics: InternalScheduleDiagnostics }> {
     const now = options.now ? options.now() : new Date();
     const random = options.random || Math.random;
     const scan = await scanInternalLibrary(options);
     await persistMediaAssets(options.db, scan.assets, now, options.seriesRoot, options.bumpsRoot);
+    const state = await ensureChannelState(options.db, random, now);
+    const rotationRows = await loadRotationRows(options.db);
+    const cursorRows = await loadCursorRows(options.db);
+    return {
+        diagnostics: buildDiagnostics(options, scan, now, state, rotationRows, cursorRows),
+    };
+}
+
+// Projects the current schedule purely from persisted DB state — no scan, no
+// ffprobe. Cheap enough to run on every request. On an empty DB it returns an
+// empty schedule so the client falls back to its built-in lineup.
+export async function projectInternalSchedulePayload(
+    options: InternalScheduleOptions
+): Promise<{ payload: SchedulePayload }> {
+    const now = options.now ? options.now() : new Date();
+    const random = options.random || Math.random;
     const state = await ensureChannelState(options.db, random, now);
     const { episodes, bumps } = await loadScheduleAssets(options.db);
     const rotationRows = await loadRotationRows(options.db);
@@ -1117,7 +1285,6 @@ export async function loadInternalSchedulePayload(
     }
 
     return {
-        diagnostics: buildDiagnostics(options, scan, now, state, rotationRows, cursorRows),
         payload: {
             fetchedAt: now.toISOString(),
             refreshAfterMs: computeScheduleRefreshDelay(now, {
@@ -1126,4 +1293,14 @@ export async function loadInternalSchedulePayload(
             schedule,
         },
     };
+}
+
+// Back-compat helper: refresh the library, then project. Prefer the decoupled
+// refreshInternalLibrary + projectInternalSchedulePayload in the request/refresh paths.
+export async function loadInternalSchedulePayload(
+    options: InternalScheduleOptions
+): Promise<{ payload: SchedulePayload; diagnostics: InternalScheduleDiagnostics }> {
+    const { diagnostics } = await refreshInternalLibrary(options);
+    const { payload } = await projectInternalSchedulePayload(options);
+    return { diagnostics, payload };
 }

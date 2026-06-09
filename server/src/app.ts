@@ -18,7 +18,8 @@ import {
 import {
     InternalScheduleDiagnostics,
     InternalScheduleOptions,
-    loadInternalSchedulePayload,
+    projectInternalSchedulePayload,
+    refreshInternalLibrary,
 } from "./lib/internal-schedule";
 import {
     createInternalPlayout,
@@ -333,6 +334,58 @@ export function createApp(options: CreateAppOptions) {
         );
     }
 
+    // Inventory refresh controller: runs the expensive library scan out-of-band
+    // (boot + periodic interval + manual bypass) so the request path only ever
+    // projects from persisted DB state. Single-flight so overlapping calls coalesce.
+    let inventoryRefreshPromise: Promise<void> | null = null;
+    let libraryRefreshTimer: NodeJS.Timeout | null = null;
+
+    const refreshInventory = (): Promise<void> => {
+        if (!internalScheduleOptions) {
+            return Promise.resolve();
+        }
+        if (inventoryRefreshPromise) {
+            return inventoryRefreshPromise;
+        }
+
+        const startedAtMs = Date.now();
+        inventoryRefreshPromise = (async () => {
+            try {
+                const { diagnostics: scheduleDiagnostics } =
+                    await refreshInternalLibrary(internalScheduleOptions);
+                diagnostics.internalSchedule = scheduleDiagnostics;
+                // Drop the projection memo so the next request reflects new inventory.
+                scheduleCache = null;
+                logEvent("info", "schedule.inventory.refreshed", {
+                    bumpAssets: scheduleDiagnostics.scannedBumpAssets,
+                    durationMs: Date.now() - startedAtMs,
+                    episodeAssets: scheduleDiagnostics.scannedEpisodeAssets,
+                });
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                diagnostics.internalSchedule.lastError = message;
+                logEvent("warn", "schedule.inventory.failed", {
+                    durationMs: Date.now() - startedAtMs,
+                    error: message,
+                });
+            } finally {
+                inventoryRefreshPromise = null;
+            }
+        })();
+
+        return inventoryRefreshPromise;
+    };
+
+    const startLibraryRefreshLoop = (intervalMs: number) => {
+        if (!internalScheduleOptions || libraryRefreshTimer) {
+            return;
+        }
+        libraryRefreshTimer = setInterval(() => {
+            void refreshInventory();
+        }, intervalMs);
+        libraryRefreshTimer.unref?.();
+    };
+
     function getPrunedRateLimitEntry(entry: RateLimitEntry, now: number): RateLimitEntry | null {
         const timestamps = entry.timestamps.filter(
             (timestamp) => now - timestamp < RATE_WINDOW_MS
@@ -587,32 +640,27 @@ export function createApp(options: CreateAppOptions) {
             return scheduleCachePromise;
         }
 
-        const loadFreshSchedule = async () => {
-            try {
-                await internalPlayout?.waitForCompletion();
-                const result = await loadInternalSchedulePayload(internalScheduleOptions);
-                diagnostics.internalSchedule = result.diagnostics;
-                scheduleCache = {
-                    expiresAt: Date.now() +
-                        getScheduleCacheTtlMs(
-                            result.payload,
-                            INTERNAL_SCHEDULE_CACHE_MAX_TTL_MS
-                        ),
-                    payload: result.payload,
-                };
-                return result.payload;
-            } catch (error) {
-                diagnostics.internalSchedule.lastError =
-                    error instanceof Error ? error.message : String(error);
-                throw error;
+        const projectSchedule = async () => {
+            // A manual bypass (Cache-Control: no-cache) is the user explicitly
+            // asking for newly added media, so refresh inventory before projecting.
+            if (bypassCache) {
+                await refreshInventory();
             }
+            await internalPlayout?.waitForCompletion();
+            const { payload } = await projectInternalSchedulePayload(internalScheduleOptions);
+            scheduleCache = {
+                expiresAt: Date.now() +
+                    getScheduleCacheTtlMs(payload, INTERNAL_SCHEDULE_CACHE_MAX_TTL_MS),
+                payload,
+            };
+            return payload;
         };
 
         if (bypassCache) {
-            return loadFreshSchedule();
+            return projectSchedule();
         }
 
-        scheduleCachePromise = loadFreshSchedule();
+        scheduleCachePromise = projectSchedule();
         try {
             return await scheduleCachePromise;
         } finally {
@@ -1487,6 +1535,9 @@ export function createApp(options: CreateAppOptions) {
             });
         });
     }
+
+    app.locals.refreshInventory = refreshInventory;
+    app.locals.startLibraryRefreshLoop = startLibraryRefreshLoop;
 
     return app;
 }

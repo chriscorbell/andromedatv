@@ -20,6 +20,10 @@ const ANDROMEDA_SERIES_ROOT =
 const ANDROMEDA_BUMPS_ROOT =
     process.env.ANDROMEDA_BUMPS_ROOT || "/nas/media/andromeda/bumps";
 const ANDROMEDA_SERIES_ALLOWLIST = process.env.ANDROMEDA_SERIES_ALLOWLIST || "";
+const ANDROMEDA_LIBRARY_REFRESH_MS = Math.max(
+    30_000,
+    Number(process.env.ANDROMEDA_LIBRARY_REFRESH_MS) || 5 * 60_000
+);
 const DB_PATH =
     process.env.DB_PATH ||
     path.resolve(__dirname, "..", "data", "andromeda.db");
@@ -154,6 +158,14 @@ async function main() {
     const server = app.listen(PORT, () => {
         console.log(`andromeda app listening on ${PORT}`);
     });
+
+    if (internalScheduleOptions) {
+        // Populate the library inventory in the background. Cold boots serve the
+        // client fallback immediately and fill in live data once this completes;
+        // warm restarts already have a populated DB, so requests are instant.
+        void app.locals.refreshInventory();
+        app.locals.startLibraryRefreshLoop(ANDROMEDA_LIBRARY_REFRESH_MS);
+    }
 
     server.requestTimeout = 0;
     server.timeout = 0;

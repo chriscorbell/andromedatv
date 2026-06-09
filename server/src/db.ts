@@ -123,6 +123,18 @@ export async function initDb(dbPath: string): Promise<Database> {
         "metadata_source",
         "metadata_source TEXT"
     );
+    await addColumnIfMissing(
+        db,
+        "media_assets",
+        "mtime_ms",
+        "mtime_ms REAL"
+    );
+    await addColumnIfMissing(
+        db,
+        "media_assets",
+        "file_size",
+        "file_size INTEGER"
+    );
 
     await db.exec(
         "CREATE INDEX IF NOT EXISTS idx_media_assets_role_series_chronological " +
