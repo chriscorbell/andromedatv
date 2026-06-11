@@ -3,11 +3,13 @@ import fs from "fs/promises";
 import path from "path";
 import type { Database } from "sqlite";
 import {
-    advanceInternalPlayoutOnCompletion,
     InternalMediaAsset,
+    InternalPlayoutPlan,
+    InternalPlayoutPlanStep,
     InternalScheduleOptions,
     MediaProbe,
-    loadCurrentInternalMediaAsset,
+    loadInternalPlayoutPlan,
+    persistInternalPlayoutPlanState,
 } from "./internal-schedule";
 import {
     buildLiveHlsTranscodeAttempts,
@@ -26,6 +28,10 @@ export type InternalPlayoutDiagnostics = {
     resumeMode: InternalPlayoutResumeMode | null;
     resumeReason: string | null;
     resumeOffsetSeconds: number | null;
+    plannedDurationSeconds: number | null;
+    plannedItemCount: number | null;
+    plannedStopAt: string | null;
+    plannedRenewalAt: string | null;
     lastStartAt: string | null;
     lastFailureAt: string | null;
     lastFailureMessage: string | null;
@@ -37,7 +43,9 @@ export type InternalPlayoutDiagnostics = {
 };
 
 export type InternalLiveHlsTranscodeRequest = {
+    concatPlaylistPath?: string;
     mediaAsset: InternalMediaAsset;
+    mediaAssets?: InternalMediaAsset[];
     outputRoot: string;
     playlistPath: string;
     segmentPattern: string;
@@ -72,27 +80,25 @@ export type InternalPlayoutOptions = {
 
 type ActivePlayout = {
     assetId: number;
+    finalState: InternalPlayoutPlan["finalState"];
     historyId: number;
     outputRoot: string;
+    planStopAt: Date;
     playlistPath: string;
     process?: ChildProcess;
-};
-
-type PlayoutHistoryRow = {
-    id: number;
-    media_asset_id: number;
-    started_at: string;
-    start_offset_seconds: number;
-};
-
-type ResumeDecision = {
-    historyId?: number;
-    mode: InternalPlayoutResumeMode;
-    offsetSeconds: number;
-    reason: string;
+    renewing: boolean;
 };
 
 const PLAYLIST_FILE_NAME = "hls.m3u8";
+const CHANNEL_OUTPUT_DIRECTORY = "channel-1";
+const CONCAT_PLAYLIST_FILE_NAME = "playout.ffconcat";
+const SEGMENT_FILE_PATTERN = "segment-%010d.ts";
+const PLAYOUT_HORIZON_MS = 48 * 60 * 60 * 1000;
+const MIN_FUTURE_PLAYOUT_MS = 24 * 60 * 60 * 1000;
+const RESTART_AFTER_EXIT_MS = 1_000;
+const RESTART_AFTER_FAILURE_MS = 5_000;
+const READY_TIMEOUT_MS = 15_000;
+
 const DEFAULT_TRANSCODE_ACCELERATION: TranscodeAccelerationStatus = {
     devicePath: "/dev/dri/renderD128",
     hardwareAvailable: false,
@@ -122,102 +128,6 @@ async function pathExists(filePath: string): Promise<boolean> {
 
 function getCurrentDate(options: InternalPlayoutOptions): Date {
     return options.now ? options.now() : new Date();
-}
-
-function normalizeResumeOffset(seconds: number): number {
-    if (!Number.isFinite(seconds) || seconds <= 0) {
-        return 0;
-    }
-
-    return Math.floor(seconds);
-}
-
-async function loadActivePlayoutHistory(db: Database): Promise<PlayoutHistoryRow | null> {
-    const row = await db.get<PlayoutHistoryRow>(
-        "SELECT id, media_asset_id, started_at, start_offset_seconds " +
-        "FROM playout_history " +
-        "WHERE completed_at IS NULL " +
-        "ORDER BY started_at DESC, id DESC " +
-        "LIMIT 1"
-    );
-
-    return row || null;
-}
-
-function resolveResumeDecision(
-    activeHistory: PlayoutHistoryRow | null,
-    mediaAsset: InternalMediaAsset,
-    now: Date,
-    canSeekMediaAsset: (mediaAsset: InternalMediaAsset) => boolean
-): ResumeDecision {
-    if (!activeHistory) {
-        return {
-            mode: "boundary",
-            offsetSeconds: 0,
-            reason: "No active playout history was available",
-        };
-    }
-
-    if (activeHistory.media_asset_id !== mediaAsset.id) {
-        return {
-            mode: "boundary",
-            offsetSeconds: 0,
-            reason: "Active playout history pointed at a different Media Asset",
-        };
-    }
-
-    const startedAtMs = new Date(activeHistory.started_at).getTime();
-    if (!Number.isFinite(startedAtMs)) {
-        return {
-            mode: "boundary",
-            offsetSeconds: 0,
-            reason: "Active playout history had an invalid start time",
-        };
-    }
-
-    if (!Number.isFinite(mediaAsset.durationSeconds) || mediaAsset.durationSeconds <= 0) {
-        return {
-            mode: "boundary",
-            offsetSeconds: 0,
-            reason: "Current Media Asset duration was unavailable",
-        };
-    }
-
-    if (!canSeekMediaAsset(mediaAsset)) {
-        return {
-            mode: "boundary",
-            offsetSeconds: 0,
-            reason: "Current Media Asset is not seek-safe",
-        };
-    }
-
-    const elapsedSeconds = normalizeResumeOffset(
-        ((now.getTime() - startedAtMs) / 1000) +
-        Number(activeHistory.start_offset_seconds || 0)
-    );
-    if (elapsedSeconds <= 0) {
-        return {
-            historyId: activeHistory.id,
-            mode: "boundary",
-            offsetSeconds: 0,
-            reason: "Active playout was still at the current Media Asset boundary",
-        };
-    }
-
-    if (elapsedSeconds >= mediaAsset.durationSeconds) {
-        return {
-            mode: "boundary",
-            offsetSeconds: 0,
-            reason: "Elapsed wall-clock time exceeded the current Media Asset duration",
-        };
-    }
-
-    return {
-        historyId: activeHistory.id,
-        mode: "wall-clock",
-        offsetSeconds: elapsedSeconds,
-        reason: "Elapsed wall-clock time was within the current seek-safe Media Asset",
-    };
 }
 
 async function recordPlayoutStart(
@@ -284,7 +194,7 @@ async function waitForPlaylist(playlistPath: string, process: ChildProcess) {
         }
     });
 
-    while (Date.now() - startedAt < 15_000) {
+    while (Date.now() - startedAt < READY_TIMEOUT_MS) {
         if (await pathExists(playlistPath)) {
             return;
         }
@@ -297,16 +207,46 @@ async function waitForPlaylist(playlistPath: string, process: ChildProcess) {
     throw new Error("ffmpeg did not produce an HLS playlist within 15s");
 }
 
+function formatFfconcatSeconds(seconds: number): string {
+    return Math.max(0, seconds)
+        .toFixed(3)
+        .replace(/\.?0+$/, "");
+}
+
+function quoteFfconcatPath(filePath: string): string {
+    return `'${filePath.replace(/'/g, "'\\''")}'`;
+}
+
+async function writeConcatPlaylist(
+    concatPlaylistPath: string,
+    mediaAssets: InternalMediaAsset[]
+) {
+    const lines = ["ffconcat version 1.0"];
+    for (const mediaAsset of mediaAssets) {
+        lines.push(`file ${quoteFfconcatPath(mediaAsset.filePath)}`);
+        lines.push(`duration ${formatFfconcatSeconds(mediaAsset.durationSeconds)}`);
+    }
+    await fs.writeFile(concatPlaylistPath, `${lines.join("\n")}\n`);
+}
+
 export async function transcodeMediaAssetToLiveHls({
+    concatPlaylistPath,
     mediaAsset,
+    mediaAssets,
     outputRoot,
     playlistPath,
     segmentPattern,
     startOffsetSeconds,
     transcodeAcceleration,
 }: InternalLiveHlsTranscodeRequest): Promise<InternalLiveHlsTranscodeResult> {
+    const plannedMediaAssets = mediaAssets?.length ? mediaAssets : [mediaAsset];
+    const inputFormat = plannedMediaAssets.length > 1 ? "concat" : "media";
+    const inputPath = inputFormat === "concat"
+        ? concatPlaylistPath || path.join(outputRoot, CONCAT_PLAYLIST_FILE_NAME)
+        : mediaAsset.filePath;
     const attempts = buildLiveHlsTranscodeAttempts({
-        inputPath: mediaAsset.filePath,
+        inputFormat,
+        inputPath,
         playlistPath,
         segmentPattern,
         startOffsetSeconds,
@@ -317,6 +257,9 @@ export async function transcodeMediaAssetToLiveHls({
     for (const [attemptIndex, attempt] of attempts.entries()) {
         await fs.rm(outputRoot, { recursive: true, force: true });
         await fs.mkdir(outputRoot, { recursive: true });
+        if (inputFormat === "concat") {
+            await writeConcatPlaylist(inputPath, plannedMediaAssets);
+        }
 
         const ffmpeg = spawn("ffmpeg", attempt.args, {
             stdio: ["ignore", "pipe", "pipe"],
@@ -343,6 +286,34 @@ export async function transcodeMediaAssetToLiveHls({
     throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
+function plannedDurationSeconds(steps: InternalPlayoutPlanStep[]): number {
+    if (!steps[0] || !steps.at(-1)) {
+        return 0;
+    }
+    return Math.max(
+        0,
+        (steps.at(-1)!.stopAt.getTime() - steps[0].startAt.getTime()) / 1000
+    );
+}
+
+function resolvePlannedRenewalAt(steps: InternalPlayoutPlanStep[]): Date | null {
+    const lastStep = steps.at(-1);
+    if (!steps[0] || !lastStep) {
+        return null;
+    }
+
+    const latestRenewalBoundaryMs = lastStep.stopAt.getTime() - MIN_FUTURE_PLAYOUT_MS;
+    let renewalAt: Date | null = null;
+    for (const step of steps) {
+        if (step.stopAt.getTime() > latestRenewalBoundaryMs) {
+            break;
+        }
+        renewalAt = step.stopAt;
+    }
+
+    return renewalAt;
+}
+
 export function createInternalPlayout(options: InternalPlayoutOptions) {
     const transcodeAcceleration =
         options.transcodeAcceleration || DEFAULT_TRANSCODE_ACCELERATION;
@@ -359,151 +330,184 @@ export function createInternalPlayout(options: InternalPlayoutOptions) {
         lastFailureAt: null,
         lastFailureMessage: null,
         lastStartAt: null,
-        outputRoot: options.hlsOutputRoot,
+        outputRoot: path.join(options.hlsOutputRoot, CHANNEL_OUTPUT_DIRECTORY),
+        plannedDurationSeconds: null,
+        plannedItemCount: null,
+        plannedRenewalAt: null,
+        plannedStopAt: null,
         resumeMode: null,
         resumeOffsetSeconds: null,
         resumeReason: null,
         transcodeAccelerationMode: transcodeAcceleration.mode,
     };
 
-    let ensureInFlight: Promise<ActivePlayout> | null = null;
-    let completionInFlight: Promise<void> | null = null;
+    let desiredRunning = false;
+    let startInFlight: Promise<ActivePlayout> | null = null;
+    let stateUpdateInFlight: Promise<void> | null = null;
+    let restartTimer: NodeJS.Timeout | null = null;
+    let renewalTimer: NodeJS.Timeout | null = null;
 
-    // Concurrent callers (e.g. simultaneous first-init requests) must share a
-    // single transcode: otherwise each would write the same playlist file at
-    // once and a response streaming that file could observe it mid-rewrite.
-    function ensureLiveHls(): Promise<ActivePlayout> {
-        if (ensureInFlight) {
-            return ensureInFlight;
+    function clearRestartTimer() {
+        if (restartTimer) {
+            clearTimeout(restartTimer);
+            restartTimer = null;
         }
-        ensureInFlight = runEnsureLiveHls().finally(() => {
-            ensureInFlight = null;
+    }
+
+    function clearRenewalTimer() {
+        if (renewalTimer) {
+            clearTimeout(renewalTimer);
+            renewalTimer = null;
+        }
+    }
+
+    function scheduleRestart(delayMs: number) {
+        if (!desiredRunning || restartTimer) {
+            return;
+        }
+        restartTimer = setTimeout(() => {
+            restartTimer = null;
+            void ensureLiveHls().catch((error) => {
+                diagnostics = {
+                    ...diagnostics,
+                    lastFailureAt: new Date().toISOString(),
+                    lastFailureMessage: error instanceof Error ? error.message : String(error),
+                };
+                scheduleRestart(RESTART_AFTER_FAILURE_MS);
+            });
+        }, delayMs);
+        restartTimer.unref?.();
+    }
+
+    function scheduleRenewal(playout: ActivePlayout, steps: InternalPlayoutPlanStep[]) {
+        clearRenewalTimer();
+        const process = playout.process;
+        if (!process) {
+            return;
+        }
+
+        const renewalAt = resolvePlannedRenewalAt(steps);
+        diagnostics = {
+            ...diagnostics,
+            plannedRenewalAt: renewalAt?.toISOString() || null,
+        };
+        if (!renewalAt) {
+            return;
+        }
+
+        const delayMs = Math.max(0, renewalAt.getTime() - getCurrentDate(options).getTime());
+        renewalTimer = setTimeout(() => {
+            if (active !== playout || process.killed) {
+                return;
+            }
+            playout.renewing = true;
+            process.kill("SIGTERM");
+        }, delayMs);
+        renewalTimer.unref?.();
+    }
+
+    function ensureLiveHls(): Promise<ActivePlayout> {
+        desiredRunning = true;
+        clearRestartTimer();
+        if (startInFlight) {
+            return startInFlight;
+        }
+        startInFlight = runEnsureLiveHls().finally(() => {
+            startInFlight = null;
         });
-        return ensureInFlight;
+        return startInFlight;
     }
 
     async function runEnsureLiveHls() {
-        if (completionInFlight) {
-            await completionInFlight;
+        if (stateUpdateInFlight) {
+            await stateUpdateInFlight;
         }
 
         if (active && await pathExists(active.playlistPath)) {
             return active;
         }
 
-        const { mediaAsset } = await loadCurrentInternalMediaAsset(scheduleOptions(options));
         const now = getCurrentDate(options);
-        const canSeekMediaAsset = options.canSeekMediaAsset || (() => true);
-        const resume = resolveResumeDecision(
-            await loadActivePlayoutHistory(options.db),
-            mediaAsset,
-            now,
-            canSeekMediaAsset
-        );
-        const outputRoot = path.join(options.hlsOutputRoot, `asset-${mediaAsset.id}`);
+        const outputRoot = path.join(options.hlsOutputRoot, CHANNEL_OUTPUT_DIRECTORY);
         const playlistPath = path.join(outputRoot, PLAYLIST_FILE_NAME);
-
-        if (active?.assetId === mediaAsset.id && await pathExists(active.playlistPath)) {
-            return active;
-        }
+        const concatPlaylistPath = path.join(outputRoot, CONCAT_PLAYLIST_FILE_NAME);
+        const segmentPattern = path.join(outputRoot, SEGMENT_FILE_PATTERN);
+        const plan = await loadInternalPlayoutPlan(scheduleOptions(options), {
+            canSeekMediaAsset: options.canSeekMediaAsset || (() => true),
+            horizonMs: PLAYOUT_HORIZON_MS,
+        });
+        const mediaAssets = plan.steps.map((step) => step.mediaAsset);
+        const transcodeLiveHls = options.transcodeLiveHls || transcodeMediaAssetToLiveHls;
 
         if (active?.process && !active.process.killed) {
+            active.renewing = true;
             active.process.kill("SIGTERM");
         }
 
-        const segmentPattern = path.join(outputRoot, "segment-%05d.ts");
-        const transcodeLiveHls = options.transcodeLiveHls || transcodeMediaAssetToLiveHls;
-
         try {
             const result = await transcodeLiveHls({
-                mediaAsset,
+                concatPlaylistPath,
+                mediaAsset: plan.mediaAsset,
+                mediaAssets,
                 outputRoot,
                 playlistPath,
                 segmentPattern,
-                startOffsetSeconds: resume.offsetSeconds,
+                startOffsetSeconds: plan.startOffsetSeconds,
                 transcodeAcceleration,
             });
-            const historyId = resume.historyId || await recordPlayoutStart(
+            const historyId = await recordPlayoutStart(
                 options.db,
-                mediaAsset,
+                plan.mediaAsset,
                 now,
-                resume.offsetSeconds
+                plan.startOffsetSeconds
             );
-            active = {
-                assetId: mediaAsset.id,
+            await persistInternalPlayoutPlanState(
+                scheduleOptions(options),
+                plan.currentState
+            );
+
+            const playout: ActivePlayout = {
+                assetId: plan.mediaAsset.id,
+                finalState: plan.finalState,
                 historyId,
                 outputRoot,
+                planStopAt: plan.steps.at(-1)?.stopAt || now,
                 playlistPath: result.playlistPath,
                 process: result.process,
+                renewing: false,
             };
+            active = playout;
+
             result.process?.once("exit", (code, signal) => {
-                if (active?.assetId !== mediaAsset.id) {
-                    return;
-                }
-
-                if (code === 0) {
-                    active = null;
-                    diagnostics = {
-                        ...diagnostics,
-                        ffmpegPid: null,
-                        hardwareAccelerationActive: false,
-                    };
-                    completionInFlight = (async () => {
-                        await markPlayoutHistoryCompleted(
-                            options.db,
-                            historyId,
-                            getCurrentDate(options),
-                            "completed"
-                        );
-                        await advanceInternalPlayoutOnCompletion(
-                            scheduleOptions(options),
-                            mediaAsset
-                        );
-                    })()
-                        .catch((error) => {
-                            diagnostics = {
-                                ...diagnostics,
-                                lastFailureAt: new Date().toISOString(),
-                                lastFailureMessage: error instanceof Error
-                                    ? error.message
-                                    : String(error),
-                            };
-                        })
-                        .finally(() => {
-                            completionInFlight = null;
-                        });
-                    return;
-                }
-
-                diagnostics = {
-                    ...diagnostics,
-                    ffmpegPid: null,
-                    hardwareAccelerationActive: false,
-                    lastFailureAt: new Date().toISOString(),
-                    lastFailureMessage: `ffmpeg exited (${signal || code})`,
-                };
+                void handleProcessExit(playout, code, signal);
             });
+
             diagnostics = {
                 ...diagnostics,
-                activeAssetPath: mediaAsset.filePath,
-                activeAssetRole: mediaAsset.role,
-                activeAssetTitle: mediaAsset.title,
+                activeAssetPath: plan.mediaAsset.filePath,
+                activeAssetRole: plan.mediaAsset.role,
+                activeAssetTitle: plan.mediaAsset.title,
                 ffmpegPid: result.process?.pid || null,
                 hardwareAccelerationActive: Boolean(result.usesHardwareAcceleration),
                 lastFailureAt: null,
                 lastFailureMessage: null,
                 lastStartAt: now.toISOString(),
-                resumeMode: resume.mode,
-                resumeOffsetSeconds: resume.offsetSeconds,
-                resumeReason: resume.reason,
+                outputRoot,
+                plannedDurationSeconds: plannedDurationSeconds(plan.steps),
+                plannedItemCount: plan.steps.length,
+                plannedStopAt: playout.planStopAt.toISOString(),
+                resumeMode: plan.resumeMode,
+                resumeOffsetSeconds: plan.startOffsetSeconds,
+                resumeReason: plan.resumeReason,
             };
-            return active;
+            scheduleRenewal(playout, plan.steps);
+            return playout;
         } catch (error) {
             diagnostics = {
                 ...diagnostics,
-                activeAssetPath: mediaAsset.filePath,
-                activeAssetRole: mediaAsset.role,
-                activeAssetTitle: mediaAsset.title,
+                activeAssetPath: plan.mediaAsset.filePath,
+                activeAssetRole: plan.mediaAsset.role,
+                activeAssetTitle: plan.mediaAsset.title,
                 ffmpegPid: null,
                 hardwareAccelerationActive: false,
                 lastFailureAt: new Date().toISOString(),
@@ -513,9 +517,94 @@ export function createInternalPlayout(options: InternalPlayoutOptions) {
         }
     }
 
+    async function handleProcessExit(
+        playout: ActivePlayout,
+        code: number | null,
+        signal: NodeJS.Signals | null
+    ) {
+        if (active !== playout) {
+            return;
+        }
+
+        clearRenewalTimer();
+        active = null;
+        diagnostics = {
+            ...diagnostics,
+            ffmpegPid: null,
+            hardwareAccelerationActive: false,
+        };
+
+        if (playout.renewing) {
+            scheduleRestart(RESTART_AFTER_EXIT_MS);
+            return;
+        }
+
+        if (code === 0) {
+            stateUpdateInFlight = (async () => {
+                await markPlayoutHistoryCompleted(
+                    options.db,
+                    playout.historyId,
+                    getCurrentDate(options),
+                    "completed"
+                );
+                await persistInternalPlayoutPlanState(
+                    scheduleOptions(options),
+                    playout.finalState
+                );
+            })()
+                .catch((error) => {
+                    diagnostics = {
+                        ...diagnostics,
+                        lastFailureAt: new Date().toISOString(),
+                        lastFailureMessage: error instanceof Error
+                            ? error.message
+                            : String(error),
+                    };
+                })
+                .finally(() => {
+                    stateUpdateInFlight = null;
+                    scheduleRestart(RESTART_AFTER_EXIT_MS);
+                });
+            return;
+        }
+
+        diagnostics = {
+            ...diagnostics,
+            lastFailureAt: new Date().toISOString(),
+            lastFailureMessage: `ffmpeg exited (${signal || code})`,
+        };
+        scheduleRestart(RESTART_AFTER_FAILURE_MS);
+    }
+
     async function waitForCompletion() {
-        while (completionInFlight) {
-            await completionInFlight;
+        while (stateUpdateInFlight) {
+            await stateUpdateInFlight;
+        }
+    }
+
+    async function waitUntilReady(timeoutMs = READY_TIMEOUT_MS): Promise<ActivePlayout> {
+        if (active && await pathExists(active.playlistPath)) {
+            return active;
+        }
+        if (!startInFlight) {
+            throw new Error("internal playout has not started");
+        }
+
+        let timeout: NodeJS.Timeout | null = null;
+        try {
+            return await Promise.race([
+                startInFlight,
+                new Promise<never>((_resolve, reject) => {
+                    timeout = setTimeout(() => {
+                        reject(new Error("internal playout is still starting"));
+                    }, timeoutMs);
+                    timeout.unref?.();
+                }),
+            ]);
+        } finally {
+            if (timeout) {
+                clearTimeout(timeout);
+            }
         }
     }
 
@@ -546,9 +635,10 @@ export function createInternalPlayout(options: InternalPlayoutOptions) {
     }
 
     return {
-        ensureLiveHls,
         getDiagnostics: () => diagnostics,
         resolveHlsFile,
+        start: ensureLiveHls,
         waitForCompletion,
+        waitUntilReady,
     };
 }

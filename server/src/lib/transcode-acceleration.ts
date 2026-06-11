@@ -15,6 +15,7 @@ export type LiveHlsTranscodeAttempt = {
 };
 
 export type BuildLiveHlsTranscodeAttemptsOptions = {
+    inputFormat?: "concat" | "media";
     inputPath: string;
     playlistPath: string;
     segmentPattern: string;
@@ -83,15 +84,17 @@ function formatFfmpegSeconds(seconds: number): string {
 }
 
 function baseFfmpegInputArgs({
+    inputFormat = "media",
     inputPath,
     startOffsetSeconds,
-}: Pick<BuildLiveHlsTranscodeAttemptsOptions, "inputPath" | "startOffsetSeconds">): string[] {
+}: Pick<BuildLiveHlsTranscodeAttemptsOptions, "inputFormat" | "inputPath" | "startOffsetSeconds">): string[] {
     return [
         "-hide_banner",
         "-loglevel",
         "warning",
         "-re",
         ...(startOffsetSeconds > 0 ? ["-ss", formatFfmpegSeconds(startOffsetSeconds)] : []),
+        ...(inputFormat === "concat" ? ["-f", "concat", "-safe", "0"] : []),
         "-i",
         inputPath,
         "-map",
@@ -114,6 +117,8 @@ function hlsOutputArgs({
         "4",
         "-hls_list_size",
         String(LIVE_HLS_LIST_SIZE),
+        "-hls_start_number_source",
+        "epoch",
         "-hls_flags",
         "delete_segments+independent_segments",
         "-hls_segment_filename",
@@ -155,6 +160,7 @@ function buildIntelVaapiAttempt(
                 : []),
             "-vaapi_device",
             options.transcodeAcceleration.devicePath,
+            ...(options.inputFormat === "concat" ? ["-f", "concat", "-safe", "0"] : []),
             "-i",
             options.inputPath,
             "-map",

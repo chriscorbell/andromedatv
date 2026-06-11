@@ -71,7 +71,7 @@ export function useSchedule() {
         }
 
         const nextRefreshMs = Math.min(
-          Math.max(data.refreshAfterMs ?? 60_000, 15_000),
+          Math.max(data.refreshAfterMs ?? 60_000, 1_000),
           5 * 60_000,
         )
         if (!cancelled) {

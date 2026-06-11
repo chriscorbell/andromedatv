@@ -67,6 +67,31 @@ test("live HLS transcode attempts keep disabled mode on the CPU encoder", () => 
     assert.equal(attempts[0].args[hlsListSizeIndex + 1], "24");
 });
 
+test("live HLS transcode attempts can read a concat playout plan", () => {
+    const attempts = buildLiveHlsTranscodeAttempts({
+        inputFormat: "concat",
+        inputPath: "/hls/playout.ffconcat",
+        playlistPath: "/hls/hls.m3u8",
+        segmentPattern: "/hls/segment-%010d.ts",
+        startOffsetSeconds: 0,
+        transcodeAcceleration: {
+            devicePath: "/dev/dri/renderD128",
+            hardwareAvailable: true,
+            mode: "disabled",
+        },
+    });
+
+    const args = attempts[0].args;
+    const inputIndex = args.indexOf("-i");
+
+    assert.equal(args[inputIndex - 4], "-f");
+    assert.equal(args[inputIndex - 3], "concat");
+    assert.equal(args[inputIndex - 2], "-safe");
+    assert.equal(args[inputIndex - 1], "0");
+    assert.equal(args[inputIndex + 1], "/hls/playout.ffconcat");
+    assert.ok(args.includes("-hls_start_number_source"));
+});
+
 test("preferred transcode acceleration tries Intel hardware before CPU fallback", () => {
     const attempts = buildLiveHlsTranscodeAttempts({
         inputPath: "/media/episode.mkv",

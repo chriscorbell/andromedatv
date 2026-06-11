@@ -160,10 +160,9 @@ async function main() {
     });
 
     if (internalScheduleOptions) {
-        // Populate the library inventory in the background. Cold boots serve the
-        // client fallback immediately and fill in live data once this completes;
-        // warm restarts already have a populated DB, so requests are instant.
-        void app.locals.refreshInventory();
+        // Populate the library inventory and start the always-on broadcast
+        // service in the background. Clients tune into that running HLS output.
+        void app.locals.startInternalPlayout();
         app.locals.startLibraryRefreshLoop(ANDROMEDA_LIBRARY_REFRESH_MS);
     }
 

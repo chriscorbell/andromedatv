@@ -233,8 +233,17 @@ export function createApp(options: CreateAppOptions) {
         trustProxy,
     } = options;
 
-    const internalScheduleOptions = options.internalSchedule
-        ? { ...options.internalSchedule, db }
+    const internalScheduleSource = options.internalSchedule || options.internalPlayout;
+    const internalScheduleOptions = internalScheduleSource
+        ? {
+            bumpsRoot: internalScheduleSource.bumpsRoot,
+            db,
+            now: internalScheduleSource.now,
+            probeMediaAsset: internalScheduleSource.probeMediaAsset,
+            random: internalScheduleSource.random,
+            seriesAllowlist: internalScheduleSource.seriesAllowlist,
+            seriesRoot: internalScheduleSource.seriesRoot,
+        }
         : null;
     const internalPlayout = options.internalPlayout
         ? createInternalPlayout({ ...options.internalPlayout, db, logger })
@@ -315,6 +324,10 @@ export function createApp(options: CreateAppOptions) {
             lastFailureMessage: null,
             lastStartAt: null,
             outputRoot: null,
+            plannedDurationSeconds: null,
+            plannedItemCount: null,
+            plannedRenewalAt: null,
+            plannedStopAt: null,
             resumeMode: null,
             resumeOffsetSeconds: null,
             resumeReason: null,
@@ -339,6 +352,7 @@ export function createApp(options: CreateAppOptions) {
     // projects from persisted DB state. Single-flight so overlapping calls coalesce.
     let inventoryRefreshPromise: Promise<void> | null = null;
     let libraryRefreshTimer: NodeJS.Timeout | null = null;
+    let internalPlayoutStartPromise: Promise<void> | null = null;
 
     const refreshInventory = (): Promise<void> => {
         if (!internalScheduleOptions) {
@@ -384,6 +398,33 @@ export function createApp(options: CreateAppOptions) {
             void refreshInventory();
         }, intervalMs);
         libraryRefreshTimer.unref?.();
+    };
+
+    const startInternalPlayout = (): Promise<void> => {
+        if (!internalPlayout) {
+            return Promise.resolve();
+        }
+        if (internalPlayoutStartPromise) {
+            return internalPlayoutStartPromise;
+        }
+
+        internalPlayoutStartPromise = (async () => {
+            await refreshInventory();
+            await internalPlayout.start();
+            diagnostics.internalPlayout = internalPlayout.getDiagnostics();
+        })()
+            .catch((error) => {
+                diagnostics.internalPlayout = internalPlayout.getDiagnostics();
+                logEvent("warn", "iptv.internal_playout.start_failed", {
+                    error: error instanceof Error ? error.message : String(error),
+                });
+                throw error;
+            })
+            .finally(() => {
+                internalPlayoutStartPromise = null;
+            });
+
+        return internalPlayoutStartPromise;
     };
 
     function getPrunedRateLimitEntry(entry: RateLimitEntry, now: number): RateLimitEntry | null {
@@ -823,7 +864,11 @@ export function createApp(options: CreateAppOptions) {
                 }
 
                 try {
-                    await internalPlayout.ensureLiveHls();
+                    if (internalPlayoutStartPromise) {
+                        await internalPlayoutStartPromise;
+                    } else {
+                        await internalPlayout.waitUntilReady();
+                    }
                     diagnostics.internalPlayout = internalPlayout.getDiagnostics();
                     const filePath = internalPlayout.resolveHlsFile(suffixPath);
                     if (!filePath) {
@@ -1537,6 +1582,7 @@ export function createApp(options: CreateAppOptions) {
     }
 
     app.locals.refreshInventory = refreshInventory;
+    app.locals.startInternalPlayout = startInternalPlayout;
     app.locals.startLibraryRefreshLoop = startLibraryRefreshLoop;
 
     return app;

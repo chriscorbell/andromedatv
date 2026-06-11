@@ -210,10 +210,10 @@ export function computeScheduleRefreshDelay(now: Date, currentItem?: { stop?: Da
 
     const millisecondsUntilBoundary = currentItem.stop.getTime() - now.getTime() + 1_000;
     if (!Number.isFinite(millisecondsUntilBoundary) || millisecondsUntilBoundary <= 0) {
-        return 15_000;
+        return 1_000;
     }
 
-    return Math.min(Math.max(millisecondsUntilBoundary, 15_000), 5 * 60_000);
+    return Math.min(Math.max(millisecondsUntilBoundary, 1_000), 5 * 60_000);
 }
 
 function pickPreferredChannel(channels: ParsedChannel[]): ParsedChannel | undefined {

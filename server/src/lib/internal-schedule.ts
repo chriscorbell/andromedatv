@@ -8,9 +8,11 @@ import { runExclusiveTransaction } from "./sqlite-transaction";
 import {
     advancePlayoutQueue,
     getCurrentPlayoutQueueItem,
+    projectPlayoutQueue,
     PlayoutQueueAsset,
+    PlayoutQueueChannelState,
     PlayoutQueueSnapshot,
-    previewPlayoutQueue,
+    resolvePlayoutQueueCursor,
 } from "./playout-queue";
 import { reconcileLibrary } from "./library-reconciliation";
 import {
@@ -28,6 +30,8 @@ import { parseSidecarOverride, SIDECAR_FILE_NAME, type SidecarOverride } from ".
 const execFileAsync = promisify(execFile);
 
 const PROBE_CONCURRENCY = 8;
+const DEFAULT_PLAYOUT_PROJECTION_MAX_STEPS = 10_000;
+export const INTERNAL_SCHEDULE_LOOKAHEAD_MS = 24 * 60 * 60 * 1000;
 
 const SUPPORTED_MEDIA_EXTENSIONS = new Set([
     ".avi",
@@ -190,6 +194,29 @@ export type InternalMediaAsset = {
     seriesTitle: string | null;
     title: string;
     durationSeconds: number;
+};
+
+export type InternalPlayoutPlanStep = {
+    index: number;
+    mediaAsset: InternalMediaAsset;
+    startAt: Date;
+    stopAt: Date;
+};
+
+export type InternalPlayoutPlan = {
+    currentState: PlayoutQueueChannelState;
+    finalState: PlayoutQueueChannelState;
+    mediaAsset: InternalMediaAsset;
+    resumeMode: "boundary" | "wall-clock";
+    resumeReason: string;
+    startOffsetSeconds: number;
+    steps: InternalPlayoutPlanStep[];
+};
+
+export type InternalPlayoutPlanOptions = {
+    canSeekMediaAsset?: (mediaAsset: InternalMediaAsset) => boolean;
+    horizonMs: number;
+    maxSteps?: number;
 };
 
 type FfprobeJson = {
@@ -1117,6 +1144,113 @@ function groupQueueEpisodeAssetsBySeries(episodeAssets: PlayoutQueueAsset[]) {
     return episodesBySeries;
 }
 
+async function persistPlayoutQueueState(
+    options: InternalScheduleOptions,
+    snapshot: PlayoutQueueSnapshot,
+    nextState: PlayoutQueueChannelState,
+    now: Date
+) {
+    const episodesBySeries = groupQueueEpisodeAssetsBySeries(snapshot.episodeAssets);
+
+    await runExclusiveTransaction(options.db, async () => {
+        await options.db.run(
+            "UPDATE channel_state SET " +
+            "current_rotation_index = ?, " +
+            "bump_cursor = ?, " +
+            "current_media_role = ?, " +
+            "updated_at = ? " +
+            "WHERE id = 1",
+            nextState.currentRotationIndex,
+            nextState.bumpCursor,
+            nextState.currentMediaRole,
+            now.toISOString()
+        );
+
+        for (const cursor of nextState.episodeCursors) {
+            const seriesEpisodes = episodesBySeries.get(cursor.seriesTitle) || [];
+            const cursorEpisode = seriesEpisodes[normalizeIndex(
+                cursor.episodeIndex,
+                seriesEpisodes.length
+            )];
+            await options.db.run(
+                "UPDATE episode_cursors SET episode_index = ?, media_file_path = ? " +
+                "WHERE channel_state_id = 1 AND series_title = ?",
+                cursor.episodeIndex,
+                cursorEpisode?.filePath || null,
+                cursor.seriesTitle
+            );
+        }
+    });
+}
+
+type ActivePlayoutHistoryAnchorRow = {
+    media_file_path: string;
+    started_at: string;
+    start_offset_seconds: number;
+};
+
+async function loadActivePlayoutHistoryAnchor(
+    db: Database
+): Promise<ActivePlayoutHistoryAnchorRow | null> {
+    const row = await db.get<ActivePlayoutHistoryAnchorRow>(
+        "SELECT media_file_path, started_at, start_offset_seconds FROM playout_history " +
+        "WHERE completed_at IS NULL ORDER BY started_at DESC, id DESC LIMIT 1"
+    );
+    return row || null;
+}
+
+function resolveAnchorStartAt(
+    active: ActivePlayoutHistoryAnchorRow | null,
+    currentAsset: PlayoutQueueAsset | null,
+    now: Date
+): { reason: string; resumeMode: "boundary" | "wall-clock"; startAt: Date } {
+    if (!active || !currentAsset || active.media_file_path !== currentAsset.filePath) {
+        return {
+            reason: active
+                ? "Active playout history did not match the current Channel State"
+                : "No active playout history was available",
+            resumeMode: "boundary",
+            startAt: now,
+        };
+    }
+
+    const startedAtMs = Date.parse(active.started_at);
+    if (!Number.isFinite(startedAtMs)) {
+        return {
+            reason: "Active playout history had an invalid start time",
+            resumeMode: "boundary",
+            startAt: now,
+        };
+    }
+
+    const startOffsetSeconds = Number(active.start_offset_seconds) || 0;
+    const startAt = new Date(startedAtMs - startOffsetSeconds * 1000);
+    if (startAt.getTime() >= now.getTime()) {
+        return {
+            reason: "Active playout was still at the current Media Asset boundary",
+            resumeMode: "boundary",
+            startAt,
+        };
+    }
+
+    return {
+        reason: "Elapsed wall-clock time was projected through the active Playout Plan",
+        resumeMode: "wall-clock",
+        startAt,
+    };
+}
+
+function toInternalPlayoutPlanStep(
+    step: { asset: PlayoutQueueAsset; index: number; startAt: Date; stopAt: Date }
+): InternalPlayoutPlanStep {
+    return {
+        index: step.index,
+        mediaAsset: toInternalMediaAsset(step.asset),
+        startAt: step.startAt,
+        stopAt: step.stopAt,
+    };
+}
+
 async function loadRotationRows(db: Database) {
     return await db.all<Array<SeriesRotationRow>>(
         "SELECT series_title FROM series_rotation WHERE channel_state_id = 1 ORDER BY position"
@@ -1187,39 +1321,100 @@ export async function advanceInternalPlayoutOnCompletion(
     }
 
     const nextState = result.state;
-    const episodesBySeries = groupQueueEpisodeAssetsBySeries(snapshot.episodeAssets);
-
-    await runExclusiveTransaction(options.db, async () => {
-        await options.db.run(
-            "UPDATE channel_state SET " +
-            "current_rotation_index = ?, " +
-            "bump_cursor = ?, " +
-            "current_media_role = ?, " +
-            "updated_at = ? " +
-            "WHERE id = 1",
-            nextState.currentRotationIndex,
-            nextState.bumpCursor,
-            nextState.currentMediaRole,
-            now.toISOString()
-        );
-
-        for (const cursor of nextState.episodeCursors) {
-            const seriesEpisodes = episodesBySeries.get(cursor.seriesTitle) || [];
-            const cursorEpisode = seriesEpisodes[normalizeIndex(
-                cursor.episodeIndex,
-                seriesEpisodes.length
-            )];
-            await options.db.run(
-                "UPDATE episode_cursors SET episode_index = ?, media_file_path = ? " +
-                "WHERE channel_state_id = 1 AND series_title = ?",
-                cursor.episodeIndex,
-                cursorEpisode?.filePath || null,
-                cursor.seriesTitle
-            );
-        }
-    });
+    await persistPlayoutQueueState(options, snapshot, nextState, now);
 
     return true;
+}
+
+export async function persistInternalPlayoutPlanState(
+    options: InternalScheduleOptions,
+    nextState: PlayoutQueueChannelState
+): Promise<void> {
+    const now = options.now ? options.now() : new Date();
+    const random = options.random || Math.random;
+    const state = await ensureChannelState(options.db, random, now);
+    const { episodes, bumps } = await loadScheduleAssets(options.db);
+    const rotationRows = await loadRotationRows(options.db);
+    const cursorRows = await loadCursorRows(options.db);
+    const snapshot = buildPlayoutQueueSnapshot(
+        state,
+        rotationRows,
+        cursorRows,
+        episodes,
+        bumps
+    );
+
+    await persistPlayoutQueueState(options, snapshot, nextState, now);
+}
+
+export async function loadInternalPlayoutPlan(
+    options: InternalScheduleOptions,
+    {
+        canSeekMediaAsset = () => true,
+        horizonMs,
+        maxSteps = DEFAULT_PLAYOUT_PROJECTION_MAX_STEPS,
+    }: InternalPlayoutPlanOptions
+): Promise<InternalPlayoutPlan> {
+    const now = options.now ? options.now() : new Date();
+    const random = options.random || Math.random;
+    const state = await ensureChannelState(options.db, random, now);
+    const { episodes, bumps } = await loadScheduleAssets(options.db);
+    const rotationRows = await loadRotationRows(options.db);
+    const cursorRows = await loadCursorRows(options.db);
+    const snapshot = buildPlayoutQueueSnapshot(
+        state,
+        rotationRows,
+        cursorRows,
+        episodes,
+        bumps
+    );
+    const currentAsset = getCurrentPlayoutQueueItem(snapshot);
+    const anchor = resolveAnchorStartAt(
+        await loadActivePlayoutHistoryAnchor(options.db),
+        currentAsset,
+        now
+    );
+    const cursor = resolvePlayoutQueueCursor(snapshot, {
+        anchorStartAt: anchor.startAt,
+        maxSteps,
+        now,
+    });
+
+    if (!cursor) {
+        throw new Error("No current internal media asset is available");
+    }
+
+    const cursorAsset = toInternalMediaAsset(cursor.asset);
+    const seekSafe = canSeekMediaAsset(cursorAsset);
+    const startOffsetSeconds = seekSafe
+        ? cursor.offsetSeconds
+        : 0;
+    const planStartAt = new Date(now.getTime() - startOffsetSeconds * 1000);
+    const planSnapshot: PlayoutQueueSnapshot = {
+        ...snapshot,
+        state: cursor.state,
+    };
+    const projection = projectPlayoutQueue(planSnapshot, {
+        maxSteps,
+        minStopAt: new Date(now.getTime() + horizonMs),
+        startAt: planStartAt,
+    });
+    const steps = projection.steps.map(toInternalPlayoutPlanStep);
+    if (!steps[0]) {
+        throw new Error("No current internal media asset is available");
+    }
+
+    return {
+        currentState: cursor.state,
+        finalState: projection.finalState,
+        mediaAsset: steps[0].mediaAsset,
+        resumeMode: startOffsetSeconds > 0 ? "wall-clock" : "boundary",
+        resumeReason: !seekSafe && cursor.offsetSeconds > 0
+            ? "Current Media Asset is not seek-safe"
+            : anchor.reason,
+        startOffsetSeconds,
+        steps,
+    };
 }
 
 // Scans the media library and reconciles channel state. This is the expensive,
@@ -1243,11 +1438,10 @@ export async function refreshInternalLibrary(
 // Projects the current schedule purely from persisted DB state — no scan, no
 // ffprobe. Cheap enough to run on every request. On an empty DB it returns an
 // empty schedule so the client falls back to its built-in lineup.
-// Anchors the schedule timeline to the asset that is actually playing. The live
-// asset began at its persisted playout_history start (minus any resume offset),
-// not "now", so projecting from `now` would shift every boundary forward by the
-// elapsed play time and make refreshAfterMs outlive the real transition. Falls
-// back to `now` when there is no matching active playout (e.g. cold start).
+// Anchors the schedule timeline to the first asset in the active Playout Plan.
+// The plan began at its persisted playout_history start (minus any resume
+// offset), not "now", so projection can skip elapsed items and keep the visible
+// schedule aligned with the continuous broadcast.
 async function resolvePlayoutAnchor(
     db: Database,
     currentAsset: PlayoutQueueAsset | null,
@@ -1276,13 +1470,7 @@ async function resolvePlayoutAnchor(
 
     const offsetSeconds = Number(active.start_offset_seconds) || 0;
     const virtualStartMs = startedAtMs - offsetSeconds * 1000;
-    const realStopMs = virtualStartMs + currentAsset.durationSeconds * 1000;
-    // The asset has nominally finished but playout hasn't advanced yet; treating
-    // it as freshly started avoids emitting boundaries in the past.
-    if (realStopMs <= now.getTime()) {
-        return now;
-    }
-    // Never anchor in the future (clock skew); the live item must contain `now`.
+    // Never anchor in the future; clock skew should not push all boundaries ahead.
     return new Date(Math.min(virtualStartMs, now.getTime()));
 }
 
@@ -1307,28 +1495,35 @@ export async function projectInternalSchedulePayload(
         getCurrentPlayoutQueueItem(snapshot),
         now
     );
-    const steps = previewPlayoutQueue(snapshot, {
-        maxSteps: 100,
+    const projection = projectPlayoutQueue(snapshot, {
+        maxSteps: DEFAULT_PLAYOUT_PROJECTION_MAX_STEPS,
+        minStopAt: new Date(now.getTime() + INTERNAL_SCHEDULE_LOOKAHEAD_MS),
         startAt: anchor,
     });
     const schedule: SchedulePayload["schedule"] = [];
-    const firstPlayoutStopAt = steps[0]?.stopAt;
+    const currentAndFutureSteps = projection.steps.filter(
+        (step) => step.stopAt.getTime() > now.getTime()
+    );
+    const firstPlayoutStopAt = currentAndFutureSteps[0]?.stopAt;
+    const scheduleHorizonMs = now.getTime() + INTERNAL_SCHEDULE_LOOKAHEAD_MS;
 
-    for (const step of steps) {
+    for (const step of currentAndFutureSteps) {
         const asset = step.asset;
-        if (asset.role === "episode" && schedule.length < 25) {
+        if (step.startAt.getTime() > scheduleHorizonMs) {
+            break;
+        }
+        if (asset.role === "episode") {
+            const live = step.startAt.getTime() <= now.getTime() &&
+                step.stopAt.getTime() > now.getTime();
             schedule.push({
                 ...(asset.summary ? { description: asset.summary } : {}),
                 episode: asset.title,
-                live: step.index === 0,
+                live,
                 startAt: step.startAt.toISOString(),
                 stopAt: step.stopAt.toISOString(),
-                ...(step.index === 0 ? { time: "live" } : {}),
+                ...(live ? { time: "live" } : {}),
                 title: asset.seriesTitle || asset.title,
             });
-        }
-        if (schedule.length >= 25) {
-            break;
         }
     }
 

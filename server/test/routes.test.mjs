@@ -1344,6 +1344,8 @@ test("internal IPTV route serves generated live HLS output", async () => {
         await fs.mkdir(bumpsRoot, { recursive: true });
         await fs.writeFile(episodePath, "fixture");
         let mediaProbeCount = 0;
+        let plannedDurationSeconds = 0;
+        let plannedItemCount = 0;
 
         const app = createApp({
             corsOrigin: "*",
@@ -1367,8 +1369,13 @@ test("internal IPTV route serves generated live HLS output", async () => {
                 },
                 random: () => 0,
                 now: () => new Date("2026-03-14T12:00:00.000Z"),
-                transcodeLiveHls: async ({ mediaAsset, outputRoot }) => {
+                transcodeLiveHls: async ({ mediaAsset, mediaAssets, outputRoot }) => {
                     assert.equal(mediaAsset.filePath, episodePath);
+                    plannedItemCount = mediaAssets.length;
+                    plannedDurationSeconds = mediaAssets.reduce(
+                        (total, asset) => total + asset.durationSeconds,
+                        0
+                    );
                     await fs.mkdir(outputRoot, { recursive: true });
                     await fs.writeFile(
                         path.join(outputRoot, "hls.m3u8"),
@@ -1380,6 +1387,8 @@ test("internal IPTV route serves generated live HLS output", async () => {
             },
         });
 
+        await app.locals.startInternalPlayout();
+
         const playlistResponse = await request(app)
             .get("/iptv/session/1/hls.m3u8");
 
@@ -1387,6 +1396,8 @@ test("internal IPTV route serves generated live HLS output", async () => {
         assert.match(playlistResponse.headers["content-type"], /mpegurl|application\/vnd\.apple\.mpegurl/);
         assert.match(playlistResponse.text, /segment-00001\.ts/);
         assert.equal(mediaProbeCount, 1);
+        assert.ok(plannedItemCount > 1);
+        assert.ok(plannedDurationSeconds >= 24 * 60 * 60);
 
         const segmentResponse = await request(app)
             .get("/iptv/session/1/segment-00001.ts");
@@ -1450,6 +1461,8 @@ test("internal playout status reports transcode acceleration mode and hardware u
                 },
             },
         });
+
+        await app.locals.startInternalPlayout();
 
         await request(app)
             .get("/iptv/session/1/hls.m3u8")
@@ -1530,6 +1543,7 @@ test("internal schedule and IPTV routes can initialize channel state concurrentl
         const address = server.address();
         assert.ok(address && typeof address === "object");
         const baseUrl = `http://127.0.0.1:${address.port}`;
+        const startPlayoutPromise = app.locals.startInternalPlayout();
 
         const statuses = await Promise.all([
             getHttpStatus(`${baseUrl}/api/schedule`),
@@ -1537,6 +1551,7 @@ test("internal schedule and IPTV routes can initialize channel state concurrentl
             getHttpStatus(`${baseUrl}/api/schedule`),
             getHttpStatus(`${baseUrl}/iptv/session/1/hls.m3u8`),
         ]);
+        await startPlayoutPromise;
 
         assert.deepEqual(
             statuses,
@@ -1619,6 +1634,8 @@ test("internal playout resumes deterministically from persisted playout state af
             },
         });
 
+        await initialApp.locals.startInternalPlayout();
+
         await request(initialApp)
             .get("/iptv/session/1/hls.m3u8")
             .expect(200);
@@ -1672,6 +1689,8 @@ test("internal playout resumes deterministically from persisted playout state af
             },
         });
 
+        await restartApp.locals.startInternalPlayout();
+
         await request(restartApp)
             .get("/iptv/session/1/hls.m3u8")
             .expect(200);
@@ -1700,7 +1719,7 @@ test("internal playout resumes deterministically from persisted playout state af
     }
 });
 
-test("internal playout advances schedule only after confirmed media completion", async () => {
+test("internal playout keeps one channel process while schedule advances by wall clock", async () => {
     const context = await createTestContext();
     const libraryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "andromeda-library-test-"));
     const hlsOutputRoot = await fs.mkdtemp(path.join(os.tmpdir(), "andromeda-hls-test-"));
@@ -1712,14 +1731,15 @@ test("internal playout advances schedule only after confirmed media completion",
         await fs.mkdir(path.join(seriesRoot, "Beta Series"), { recursive: true });
         await fs.mkdir(bumpsRoot, { recursive: true });
         await fs.writeFile(path.join(seriesRoot, "Alpha Series", "episode-01.mp4"), "fixture");
-        await fs.writeFile(path.join(seriesRoot, "Alpha Series", "episode-02.mp4"), "fixture");
         await fs.writeFile(path.join(seriesRoot, "Beta Series", "episode-01.mp4"), "fixture");
         await fs.writeFile(path.join(bumpsRoot, "01-first-bump.mp4"), "fixture");
         await fs.writeFile(path.join(bumpsRoot, "02-second-bump.mp4"), "fixture");
 
         const transcodeRequests = [];
         const playoutProcesses = [];
-        const randomValues = [0.999, 0, 0];
+        let now = new Date("2026-03-14T12:00:00.000Z");
+        const nowProvider = () => now;
+        const random = () => 0.999;
         const app = createApp({
             corsOrigin: "*",
             db: context.db,
@@ -1736,8 +1756,8 @@ test("internal playout advances schedule only after confirmed media completion",
                     videoCodec: "h264",
                     audioCodec: "aac",
                 }),
-                random: () => randomValues.shift() ?? 0,
-                now: () => new Date("2026-03-14T12:00:00.000Z"),
+                random,
+                now: nowProvider,
             },
             internalPlayout: {
                 bumpsRoot,
@@ -1749,11 +1769,11 @@ test("internal playout advances schedule only after confirmed media completion",
                     videoCodec: "h264",
                     audioCodec: "aac",
                 }),
-                random: () => randomValues.shift() ?? 0,
-                now: () => new Date("2026-03-14T12:00:00.000Z"),
-                transcodeLiveHls: async ({ mediaAsset, outputRoot }) => {
+                random,
+                now: nowProvider,
+                transcodeLiveHls: async ({ mediaAsset, mediaAssets, outputRoot }) => {
                     const process = new FakePlayoutProcess(10_000 + playoutProcesses.length);
-                    transcodeRequests.push(mediaAsset);
+                    transcodeRequests.push({ mediaAsset, mediaAssets });
                     playoutProcesses.push(process);
                     await fs.mkdir(outputRoot, { recursive: true });
                     const playlistPath = path.join(outputRoot, "hls.m3u8");
@@ -1785,140 +1805,47 @@ test("internal playout advances schedule only after confirmed media completion",
             return payload.schedule.map((item) => item.title);
         }
 
-        async function channelStateSnapshot() {
-            const rows = await context.db.all(
-                "SELECT current_rotation_index, bump_cursor, current_media_role FROM channel_state"
-            );
-            return JSON.stringify(rows);
-        }
+        await app.locals.startInternalPlayout();
 
-        async function completeCurrentAsset(
-            expectedTitle,
-            { requestNextPlaylistTitle = null, requestNextScheduleTitle = null } = {}
-        ) {
-            // Polling the playlist is idempotent while an asset is active, so this
-            // waits for the previous asset's completion to advance the schedule
-            // rather than racing it with a fixed sleep.
-            await waitFor(
-                async () => {
-                    const response = await request(app)
-                        .get("/iptv/session/1/hls.m3u8");
-
-                    assert.equal(response.status, 200);
-                    return transcodeRequests.at(-1)?.title === expectedTitle;
-                },
-                { label: `transcode of ${expectedTitle}` }
-            );
-
-            // Completion advances the schedule asynchronously via the process exit
-            // handler; wait for the persisted channel state to settle before the
-            // caller asserts on the post-advancement schedule.
-            const before = await channelStateSnapshot();
-            playoutProcesses.at(-1).emit("exit", 0, null);
-            const nextPlaylistResponsePromise = requestNextPlaylistTitle
-                ? request(app)
-                    .get("/iptv/session/1/hls.m3u8")
-                    .then((response) => response)
-                : null;
-            const nextScheduleResponsePromise = requestNextScheduleTitle
-                ? request(app)
-                    .get("/api/schedule")
-                    .set("Cache-Control", "no-cache")
-                    .then((response) => response)
-                : null;
-            await waitFor(
-                async () => (await channelStateSnapshot()) !== before,
-                { label: `schedule to advance past ${expectedTitle}` }
-            );
-            if (nextPlaylistResponsePromise) {
-                const nextPlaylistResponse = await nextPlaylistResponsePromise;
-                assert.equal(nextPlaylistResponse.status, 200);
-                assert.equal(transcodeRequests.at(-1)?.title, requestNextPlaylistTitle);
-            }
-            if (nextScheduleResponsePromise) {
-                const nextScheduleResponse = await nextScheduleResponsePromise;
-                assert.equal(nextScheduleResponse.status, 200);
-                assert.equal(
-                    nextScheduleResponse.body.schedule[0]?.title,
-                    requestNextScheduleTitle
-                );
-            }
-        }
-
-        await app.locals.refreshInventory();
-
+        assert.equal(transcodeRequests.length, 1);
+        assert.equal(transcodeRequests[0].mediaAsset.title, "episode-01");
+        assert.ok(
+            transcodeRequests[0].mediaAssets.reduce(
+                (total, asset) => total + asset.durationSeconds,
+                0
+            ) >= 24 * 60 * 60
+        );
         assert.deepEqual(
             (await currentScheduleTitles()).slice(0, 4),
             ["Alpha Series", "Beta Series", "Alpha Series", "Beta Series"]
         );
-        assert.deepEqual(
-            (await currentScheduleTitles()).slice(0, 2),
-            ["Alpha Series", "Beta Series"]
-        );
 
-        await completeCurrentAsset("episode-01", {
-            requestNextPlaylistTitle: "01-first-bump",
-            requestNextScheduleTitle: "Beta Series",
-        });
+        now = new Date("2026-03-14T12:30:05.000Z");
         const bumpHiddenSchedule = await currentSchedulePayload({ bypassCache: true });
         assert.equal(bumpHiddenSchedule.schedule[0]?.title, "Beta Series");
         assert.equal(bumpHiddenSchedule.schedule[0]?.live, false);
-        assert.equal(bumpHiddenSchedule.schedule[0]?.startAt, "2026-03-14T12:00:30.000Z");
-        assert.equal(bumpHiddenSchedule.refreshAfterMs, 31000);
+        assert.equal(bumpHiddenSchedule.schedule[0]?.startAt, "2026-03-14T12:30:30.000Z");
+        assert.equal(bumpHiddenSchedule.refreshAfterMs, 26000);
         assert.deepEqual(
             bumpHiddenSchedule.schedule.map((item) => item.title).slice(0, 3),
             ["Beta Series", "Alpha Series", "Beta Series"]
         );
 
-        await completeCurrentAsset("01-first-bump");
+        now = new Date("2026-03-14T12:30:31.000Z");
+        const betaLiveSchedule = await currentSchedulePayload({ bypassCache: true });
+        assert.equal(betaLiveSchedule.schedule[0]?.title, "Beta Series");
+        assert.equal(betaLiveSchedule.schedule[0]?.live, true);
+        assert.equal(betaLiveSchedule.schedule[0]?.startAt, "2026-03-14T12:30:30.000Z");
         assert.deepEqual(
-            (await currentScheduleTitles({ bypassCache: true })).slice(0, 4),
-            ["Beta Series", "Alpha Series", "Beta Series", "Alpha Series"]
-        );
-        assert.deepEqual(
-            await context.db.all(
-                "SELECT current_rotation_index, bump_cursor, current_media_role FROM channel_state"
-            ),
-            [{ current_rotation_index: 1, bump_cursor: 1, current_media_role: "episode" }]
-        );
-        assert.deepEqual(
-            await context.db.all(
-                "SELECT series_title, episode_index FROM episode_cursors ORDER BY series_title"
-            ),
-            [
-                { series_title: "Alpha Series", episode_index: 1 },
-                { series_title: "Beta Series", episode_index: 0 },
-            ]
-        );
-
-        await completeCurrentAsset("episode-01");
-        await completeCurrentAsset("02-second-bump");
-        assert.deepEqual(
-            (await currentScheduleTitles({ bypassCache: true })).slice(0, 3),
-            ["Alpha Series", "Beta Series", "Alpha Series"]
-        );
-        assert.deepEqual(
-            await context.db.all(
-                "SELECT current_rotation_index, bump_cursor, current_media_role FROM channel_state"
-            ),
-            [{ current_rotation_index: 0, bump_cursor: 0, current_media_role: "episode" }]
-        );
-
-        await completeCurrentAsset("episode-02");
-        await completeCurrentAsset("01-first-bump");
-        assert.deepEqual(
-            (await currentScheduleTitles({ bypassCache: true })).slice(0, 3),
+            betaLiveSchedule.schedule.map((item) => item.title).slice(0, 3),
             ["Beta Series", "Alpha Series", "Beta Series"]
         );
-        assert.deepEqual(
-            await context.db.all(
-                "SELECT series_title, episode_index FROM episode_cursors ORDER BY series_title"
-            ),
-            [
-                { series_title: "Alpha Series", episode_index: 0 },
-                { series_title: "Beta Series", episode_index: 0 },
-            ]
-        );
+        assert.equal(transcodeRequests.length, 1);
+
+        const playlistResponse = await request(app)
+            .get("/iptv/session/1/hls.m3u8");
+        assert.equal(playlistResponse.status, 200);
+        assert.equal(transcodeRequests.length, 1);
     } finally {
         await fs.rm(libraryRoot, { recursive: true, force: true });
         await fs.rm(hlsOutputRoot, { recursive: true, force: true });

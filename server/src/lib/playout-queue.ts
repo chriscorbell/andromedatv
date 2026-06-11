@@ -36,6 +36,20 @@ export type PlayoutQueueStep = {
     stopAt: Date;
 };
 
+export type PlayoutQueueProjection = {
+    finalState: PlayoutQueueChannelState;
+    steps: PlayoutQueueStep[];
+};
+
+export type PlayoutQueueCursor = {
+    asset: PlayoutQueueAsset;
+    index: number;
+    offsetSeconds: number;
+    startAt: Date;
+    state: PlayoutQueueChannelState;
+    stopAt: Date;
+};
+
 export type PlayoutQueueAdvanceResult = {
     advanced: boolean;
     state: PlayoutQueueChannelState;
@@ -44,6 +58,18 @@ export type PlayoutQueueAdvanceResult = {
 export type PreviewPlayoutQueueOptions = {
     maxSteps: number;
     startAt: Date;
+};
+
+export type ProjectPlayoutQueueOptions = {
+    maxSteps: number;
+    minStopAt?: Date;
+    startAt: Date;
+};
+
+export type ResolvePlayoutQueueCursorOptions = {
+    anchorStartAt: Date;
+    maxSteps: number;
+    now: Date;
 };
 
 function normalizeIndex(index: number, length: number): number {
@@ -219,6 +245,13 @@ export function previewPlayoutQueue(
     snapshot: PlayoutQueueSnapshot,
     { maxSteps, startAt }: PreviewPlayoutQueueOptions
 ): PlayoutQueueStep[] {
+    return projectPlayoutQueue(snapshot, { maxSteps, startAt }).steps;
+}
+
+export function projectPlayoutQueue(
+    snapshot: PlayoutQueueSnapshot,
+    { maxSteps, minStopAt, startAt }: ProjectPlayoutQueueOptions
+): PlayoutQueueProjection {
     const steps: PlayoutQueueStep[] = [];
     const previewState = cloneState(snapshot.state);
     let cursorTime = new Date(startAt.getTime());
@@ -238,7 +271,48 @@ export function previewPlayoutQueue(
         });
         advanceCurrentAsset(snapshot, previewState, asset);
         cursorTime = stopAt;
+
+        if (minStopAt && cursorTime.getTime() >= minStopAt.getTime()) {
+            break;
+        }
     }
 
-    return steps;
+    return {
+        finalState: cloneState(previewState),
+        steps,
+    };
+}
+
+export function resolvePlayoutQueueCursor(
+    snapshot: PlayoutQueueSnapshot,
+    { anchorStartAt, maxSteps, now }: ResolvePlayoutQueueCursorOptions
+): PlayoutQueueCursor | null {
+    const cursorState = cloneState(snapshot.state);
+    const nowMs = now.getTime();
+    let cursorTime = new Date(anchorStartAt.getTime());
+
+    for (let index = 0; index < maxSteps; index += 1) {
+        const stateAtStep = cloneState(cursorState);
+        const asset = resolveCurrentAsset(snapshot, cursorState);
+        if (!asset) {
+            return null;
+        }
+
+        const stopAt = addSeconds(cursorTime, asset.durationSeconds);
+        if (stopAt.getTime() > nowMs) {
+            return {
+                asset,
+                index,
+                offsetSeconds: Math.max(0, (nowMs - cursorTime.getTime()) / 1000),
+                startAt: cursorTime,
+                state: stateAtStep,
+                stopAt,
+            };
+        }
+
+        advanceCurrentAsset(snapshot, cursorState, asset);
+        cursorTime = stopAt;
+    }
+
+    return null;
 }
