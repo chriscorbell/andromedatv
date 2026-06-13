@@ -22,6 +22,7 @@ test-results/
 
 # Editor directories and files
 .vscode/
+agent/
 .idea
 .DS_Store
 *.suo
