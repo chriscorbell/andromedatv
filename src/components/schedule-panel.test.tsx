@@ -11,7 +11,6 @@ describe('SchedulePanel', () => {
       <SchedulePanel
         expandedScheduleKey="Angel Cop-live"
         onToggleItem={handleToggle}
-        onRetrySchedule={vi.fn()}
         schedule={[
           {
             title: 'Angel Cop',
@@ -51,7 +50,6 @@ describe('SchedulePanel', () => {
       <SchedulePanel
         expandedScheduleKey={null}
         onToggleItem={vi.fn()}
-        onRetrySchedule={vi.fn()}
         schedule={[
           {
             title: 'Bubblegum Crisis',
@@ -84,7 +82,6 @@ describe('SchedulePanel', () => {
         expandedScheduleKey={null}
         getStreamDate={() => new Date('2026-03-15T15:00:00.000Z').getTime()}
         onToggleItem={vi.fn()}
-        onRetrySchedule={vi.fn()}
         schedule={[
           {
             title: 'Genocyber',
@@ -125,7 +122,6 @@ describe('SchedulePanel', () => {
         expandedScheduleKey={null}
         getStreamDate={() => new Date('2026-03-15T15:37:30.000Z').getTime()}
         onToggleItem={vi.fn()}
-        onRetrySchedule={vi.fn()}
         schedule={[finished, onScreen, upNext]}
         scheduleState="ready"
         scheduleStatusDetail="Schedule is up to date."
@@ -146,14 +142,11 @@ describe('SchedulePanel', () => {
     expect(screen.getAllByText('LIVE')).toHaveLength(1)
   })
 
-  it('shows degraded schedule status and supports manual retry', () => {
-    const handleRetry = vi.fn()
-
+  it('shows degraded schedule status', () => {
     render(
       <SchedulePanel
         expandedScheduleKey={null}
         onToggleItem={vi.fn()}
-        onRetrySchedule={handleRetry}
         schedule={[
           {
             title: 'Angel Cop',
@@ -162,17 +155,14 @@ describe('SchedulePanel', () => {
           },
         ]}
         scheduleState="offline"
-        scheduleStatusDetail="Unable to load the schedule yet. Retrying automatically..."
+        scheduleStatusDetail="Unable to load the schedule - retrying automatically..."
         syncTitleTooltip={vi.fn()}
       />,
     )
 
-    expect(screen.getByRole('alert')).toHaveTextContent('Unavailable')
+    expect(screen.getByRole('alert')).toHaveTextContent('Schedule unavailable')
     expect(
-      screen.getByText('Unable to load the schedule yet. Retrying automatically...'),
+      screen.getByText('Unable to load the schedule - retrying automatically...'),
     ).toBeInTheDocument()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Retry now' }))
-    expect(handleRetry).toHaveBeenCalledTimes(1)
   })
 })

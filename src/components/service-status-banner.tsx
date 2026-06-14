@@ -1,70 +1,103 @@
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
+import {
+  faArrowsRotate,
+  faClock,
+  faTriangleExclamation,
+} from '@fortawesome/free-solid-svg-icons'
+import type { IconDefinition } from '@fortawesome/fontawesome-svg-core'
+
 type ServiceStatusBannerProps = {
   detail: string
   label: string
-  onRetry?: () => void
-  retryLabel?: string
   state: 'connecting' | 'reconnecting' | 'refreshing' | 'stale' | 'offline'
 }
 
-function getStatusTitle(state: ServiceStatusBannerProps['state']) {
-  switch (state) {
-    case 'connecting':
-      return 'Connecting'
-    case 'reconnecting':
-      return 'Reconnecting'
-    case 'refreshing':
-      return 'Refreshing'
-    case 'stale':
-      return 'Delayed'
-    case 'offline':
-      return 'Unavailable'
-  }
+type StatusTone = 'accent' | 'amber' | 'red'
+
+type StatusConfig = {
+  title: string
+  icon: IconDefinition
+  tone: StatusTone
+  spin: boolean
 }
 
-function getStatusClasses(state: ServiceStatusBannerProps['state']) {
-  switch (state) {
-    case 'offline':
-      return 'border-[rgba(247,118,142,0.3)] bg-[rgba(247,118,142,0.1)] text-[var(--color-accent-red)]'
-    case 'stale':
-      return 'border-amber-500/30 bg-amber-500/10 text-amber-100'
-    default:
-      return 'border-[rgba(31,214,166,0.3)] bg-[var(--color-acc-tint)] text-[var(--color-app-fg)]'
-  }
+const STATUS_CONFIG: Record<
+  ServiceStatusBannerProps['state'],
+  StatusConfig
+> = {
+  connecting: {
+    title: 'Connecting',
+    icon: faArrowsRotate,
+    tone: 'accent',
+    spin: true,
+  },
+  reconnecting: {
+    title: 'Reconnecting',
+    icon: faArrowsRotate,
+    tone: 'accent',
+    spin: true,
+  },
+  refreshing: {
+    title: 'Refreshing',
+    icon: faArrowsRotate,
+    tone: 'accent',
+    spin: true,
+  },
+  stale: { title: 'Delayed', icon: faClock, tone: 'amber', spin: false },
+  offline: {
+    title: 'Unavailable',
+    icon: faTriangleExclamation,
+    tone: 'red',
+    spin: false,
+  },
+}
+
+const TONE_CARD: Record<StatusTone, string> = {
+  accent: 'border-[rgba(31,214,166,0.22)] bg-[rgba(31,214,166,0.06)]',
+  amber: 'border-[rgba(245,158,11,0.22)] bg-[rgba(245,158,11,0.06)]',
+  red: 'border-[rgba(247,118,142,0.22)] bg-[rgba(247,118,142,0.06)]',
+}
+
+const TONE_MARK: Record<StatusTone, string> = {
+  accent: 'bg-[rgba(31,214,166,0.12)] text-[var(--color-accent)]',
+  amber: 'bg-[rgba(245,158,11,0.13)] text-[#f3b765]',
+  red: 'bg-[rgba(247,118,142,0.12)] text-[var(--color-accent-red)]',
+}
+
+const TONE_TITLE: Record<StatusTone, string> = {
+  accent: 'text-[var(--color-accent)]',
+  amber: 'text-[#f3b765]',
+  red: 'text-[var(--color-accent-red)]',
 }
 
 export function ServiceStatusBanner({
   detail,
   label,
-  onRetry,
-  retryLabel = 'Retry now',
   state,
 }: ServiceStatusBannerProps) {
+  const { title, icon, tone, spin } = STATUS_CONFIG[state]
+
   return (
     <div
       role={state === 'offline' ? 'alert' : 'status'}
       aria-live={state === 'offline' ? 'assertive' : 'polite'}
-      className={`flex items-center gap-3 border-b px-4 py-2.5 text-xs ${getStatusClasses(state)}`}
+      className={`mx-3 mb-2 mt-1 flex shrink-0 items-center gap-3 rounded-xl border px-3 py-2 text-[0.75rem] ${TONE_CARD[tone]}`}
     >
+      <span
+        className={`grid h-7 w-7 shrink-0 place-items-center rounded-lg text-[0.6875rem] ${TONE_MARK[tone]}`}
+        aria-hidden="true"
+      >
+        <FontAwesomeIcon icon={icon} spin={spin} />
+      </span>
+
       <div className="min-w-0 flex-1">
-        <div className="text-[10px] uppercase tracking-[0.24em] text-zinc-400">
-          {label}
-        </div>
-        <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1">
-          <span className="font-semibold uppercase tracking-[0.18em]">
-            {getStatusTitle(state)}
-          </span>
-          <span className="min-w-0 text-zinc-200">{detail}</span>
-        </div>
+        <span className={`font-semibold ${TONE_TITLE[tone]}`}>
+          {label} {title.toLowerCase()}
+        </span>
+        <p className="mt-0.5 text-[0.6875rem] leading-snug text-[var(--color-muted)]">
+          {detail}
+        </p>
       </div>
-      {onRetry && (
-        <button
-          type="button"
-          className="shrink-0 border border-zinc-500 bg-black/30 px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-zinc-100 transition hover:border-zinc-300"
-          onClick={onRetry}
-        >
-          {retryLabel}
-        </button>
-      )}
     </div>
   )
 }

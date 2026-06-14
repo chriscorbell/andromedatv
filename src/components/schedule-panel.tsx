@@ -8,7 +8,6 @@ type SchedulePanelProps = {
   expandedScheduleKey: string | null
   getStreamDate?: () => number | null
   onToggleItem: (itemKey: string) => void
-  onRetrySchedule: () => void
   schedule: ScheduleItem[]
   scheduleState: 'loading' | 'ready' | 'refreshing' | 'stale' | 'offline'
   scheduleStatusDetail: string
@@ -60,7 +59,6 @@ export function SchedulePanel({
   expandedScheduleKey,
   getStreamDate,
   onToggleItem,
-  onRetrySchedule,
   schedule,
   scheduleState,
   scheduleStatusDetail,
@@ -87,10 +85,7 @@ export function SchedulePanel({
       {scheduleState !== 'ready' && (
         <ServiceStatusBanner
           detail={scheduleStatusDetail}
-          label="schedule sync"
-          onRetry={
-            scheduleState === 'loading' ? undefined : onRetrySchedule
-          }
+          label="Schedule"
           state={
             scheduleState === 'loading'
               ? 'connecting'

@@ -47,7 +47,7 @@ describe('useSchedule', () => {
       expect(result.current.scheduleState).toBe('offline')
     })
     expect(result.current.scheduleStatusDetail).toContain(
-      'Unable to load the schedule yet',
+      'Unable to load the schedule',
     )
 
     act(() => {

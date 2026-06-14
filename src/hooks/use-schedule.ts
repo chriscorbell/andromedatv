@@ -88,7 +88,7 @@ export function useSchedule() {
           } else {
             setScheduleUiState(
               'offline',
-              'Unable to load the schedule yet. Retrying automatically...',
+              'Unable to load the schedule - retrying automatically...',
             )
           }
           timeoutId = window.setTimeout(() => {

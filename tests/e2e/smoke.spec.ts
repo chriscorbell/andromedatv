@@ -14,6 +14,27 @@ test('homepage loads and expanded schedule details are visible', async ({ page }
   await expect(page.getByText('Pilot & more')).toBeVisible()
 })
 
+test('fallback schedule remains usable while schedule refresh is offline', async ({ page }) => {
+  await page.route('**/api/schedule', async (route) => {
+    await route.fulfill({
+      status: 502,
+      contentType: 'application/json',
+      body: JSON.stringify({ error: 'Failed to load schedule' }),
+    })
+  })
+
+  await page.goto('/')
+
+  await expect(
+    page.getByRole('alert').filter({ hasText: 'Schedule unavailable' }),
+  ).toBeVisible()
+
+  const angelCopButton = page.getByRole('button', { name: /angel cop/i })
+  await angelCopButton.click()
+
+  await expect(angelCopButton).toHaveAttribute('aria-expanded', 'true')
+})
+
 test('chat register flow works and user can log out again', async ({ page }, testInfo) => {
   await page.goto('/')
 

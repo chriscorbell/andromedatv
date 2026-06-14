@@ -50,7 +50,6 @@ function MainApp() {
     redactMessagesByNickname,
     removeMessagesByNickname,
     replaceDeletedMessage,
-    retryChatConnection,
     setChatError,
     toggleAuthMode,
   } = useChat()
@@ -94,7 +93,6 @@ function MainApp() {
   } = useVideoPlayer()
   const {
     expandedScheduleKey,
-    retrySchedule,
     schedule,
     scheduleState,
     scheduleStatusDetail,
@@ -161,7 +159,6 @@ function MainApp() {
             expandedScheduleKey={expandedScheduleKey}
             getStreamDate={getStreamDate}
             onToggleItem={toggleScheduleItem}
-            onRetrySchedule={retrySchedule}
             schedule={schedule}
             scheduleState={scheduleState}
             scheduleStatusDetail={scheduleStatusDetail}
@@ -175,12 +172,7 @@ function MainApp() {
             {chatConnectionState !== 'live' && (
                 <ServiceStatusBanner
                   detail={chatConnectionDetail}
-                  label="chat status"
-                  onRetry={
-                    chatConnectionState === 'connecting'
-                      ? undefined
-                      : retryChatConnection
-                  }
+                  label="Chat"
                   state={chatConnectionState}
                 />
               )}
