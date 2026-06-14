@@ -8,7 +8,9 @@
     "rollup": "^4.59.0"
   },
   "scripts": {
-    "dev": "vite",
+    "dev": "bun run --parallel dev:frontend dev:backend",
+    "dev:frontend": "vite",
+    "dev:backend": "bun --env-file=../.env run --cwd server dev",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",

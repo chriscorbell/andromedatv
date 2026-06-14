@@ -24,7 +24,7 @@ The app is served from one origin and one process:
 
 ### Local frontend scripts
 
-- `bun run dev`
+- `bun run dev:frontend`
 - `bun run build`
 - `bun run preview`
 - `bun run lint`
@@ -36,6 +36,18 @@ The app is served from one origin and one process:
 - `bun run --cwd server dev`
 - `bun run --cwd server build`
 - `bun run --cwd server test`
+
+### Run the full app locally
+
+Configure the root `.env`, then start the Vite frontend and Express backend
+together:
+
+```bash
+bun run dev
+```
+
+Open `http://localhost:5173`. Vite proxies `/api` and `/iptv` requests to the
+backend at `http://127.0.0.1:3001`.
 
 For browser smoke tests, install Chromium once locally with:
 
