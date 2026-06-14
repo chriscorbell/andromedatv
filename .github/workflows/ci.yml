@@ -16,6 +16,12 @@ concurrency:
 permissions:
   contents: read
 
+# Run JS-based actions (checkout, setup-node, docker/*) on Node.js 24 instead of
+# the deprecated Node.js 20 runtime they default to. The build/test Node is
+# already pinned to 24 via setup-node below.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   validate:
     runs-on: ubuntu-latest
