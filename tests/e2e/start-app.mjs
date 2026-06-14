@@ -7,6 +7,8 @@ const rootDir = process.cwd()
 const dataDir = path.join(rootDir, '.tmp', 'e2e')
 const dbPath = path.join(dataDir, 'andromeda-e2e.db')
 const jwtSecretPath = path.join(dataDir, 'jwt-secret')
+const appPort = process.env.E2E_APP_PORT || '3001'
+const mockPort = process.env.E2E_MOCK_PORT || '8409'
 
 async function ensureCleanDataDir() {
   await fs.mkdir(dataDir, { recursive: true })
@@ -26,11 +28,11 @@ async function main() {
     stdio: 'inherit',
     env: {
       ...process.env,
-      PORT: '3001',
+      PORT: appPort,
       DB_PATH: dbPath,
       JWT_SECRET_PATH: jwtSecretPath,
       JWT_SECRET: 'playwright-secret',
-      ERSATZTV_BASE_URL: 'http://127.0.0.1:8409',
+      ERSATZTV_BASE_URL: `http://127.0.0.1:${mockPort}`,
       INITIAL_ADMIN_NICKNAME: 'andromedatv',
       INITIAL_ADMIN_PASSWORD: 'supersecret',
       CORS_ORIGIN: '*',
