@@ -1,5 +1,7 @@
 import { useId } from 'react'
 import type { FormEventHandler, RefObject } from 'react'
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
+import { faPaperPlane, faShield } from '@fortawesome/free-solid-svg-icons'
 
 type ChatComposerProps = {
   authIsAdmin: boolean
@@ -108,13 +110,18 @@ export function ChatComposer({
           rows={1}
           aria-invalid={Boolean(chatError)}
           aria-describedby={describedBy}
-          className="max-h-64 min-h-9 flex-1 resize-none overflow-hidden border border-zinc-700 bg-black/40 px-3 py-2 text-zinc-100 placeholder:text-zinc-600 focus:border-zinc-500 focus:outline-none disabled:opacity-60"
+          className="max-h-64 min-h-9 flex-1 resize-none overflow-hidden border border-zinc-700 bg-zinc-900/40 px-3 py-2 leading-6 text-zinc-100 placeholder:text-zinc-600 transition focus:border-sky-400/70 focus:bg-zinc-900/70 focus:outline-none focus:ring-1 focus:ring-sky-400/30 disabled:opacity-60"
         />
         <button
           type="submit"
           disabled={composerDisabled}
-          className="h-9 border border-zinc-700 bg-zinc-900 px-3 text-zinc-100 transition hover:border-zinc-500 disabled:cursor-not-allowed disabled:opacity-60"
+          className="inline-flex min-h-9 items-center gap-2 border border-transparent bg-gradient-to-r from-[var(--color-accent)] to-[var(--color-accent-strong)] px-4 py-2 font-semibold leading-6 text-zinc-950 shadow-lg shadow-sky-500/20 transition hover:brightness-110 hover:shadow-sky-500/30 active:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/50 disabled:cursor-not-allowed disabled:opacity-50 disabled:shadow-none disabled:hover:brightness-100"
         >
+          <FontAwesomeIcon
+            icon={faPaperPlane}
+            className="text-[13px]"
+            aria-hidden="true"
+          />
           {messageSending ? 'sending…' : 'send'}
         </button>
       </div>
@@ -155,7 +162,7 @@ export function ChatComposer({
       <div className="mt-2 flex items-center justify-between text-zinc-500">
         <button
           type="button"
-          className="text-zinc-400 hover:text-zinc-200"
+          className="text-zinc-400 transition-colors hover:text-zinc-200 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sky-400/40"
           onClick={onSignOut}
         >
           sign out
@@ -163,23 +170,11 @@ export function ChatComposer({
         {authIsAdmin ? (
           <button
             type="button"
-            className="inline-flex h-6 w-6 items-center justify-center text-zinc-400 transition hover:text-zinc-200 cursor-pointer"
+            className="inline-flex h-6 w-6 items-center justify-center text-zinc-400 transition hover:text-sky-400 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sky-400/40 cursor-pointer"
             onClick={onOpenAdminMenu}
             aria-label="Open admin menu"
           >
-            <svg
-              viewBox="0 0 24 24"
-              className="h-4 w-4"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.7"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
-              <path d="M12 3l7 3v6c0 4.2-2.9 8-7 9-4.1-1-7-4.8-7-9V6l7-3z" />
-              <path d="M9.5 12.5l1.7 1.7 3.3-3.3" />
-            </svg>
+            <FontAwesomeIcon icon={faShield} className="text-[16px]" />
           </button>
         ) : (
           <span aria-hidden="true" />

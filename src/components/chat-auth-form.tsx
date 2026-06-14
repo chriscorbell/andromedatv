@@ -1,5 +1,7 @@
 import { useId } from 'react'
 import type { FormEventHandler } from 'react'
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
+import { faLock, faUser } from '@fortawesome/free-solid-svg-icons'
 
 type ChatAuthFormProps = {
   authError: string | null
@@ -44,16 +46,63 @@ export function ChatAuthForm({
       ? 'Signing you into chat...'
       : 'Creating your account...'
 
+  const selectMode = (mode: 'login' | 'register') => {
+    if (mode !== authMode) {
+      onAuthModeToggle()
+    }
+  }
+
+  const inputClasses =
+    'h-11 w-full border border-zinc-700 bg-zinc-900/40 pl-10 pr-3 text-zinc-100 placeholder:text-zinc-600 transition focus:border-sky-400/70 focus:bg-zinc-900/70 focus:outline-none focus:ring-1 focus:ring-sky-400/30 disabled:opacity-60'
+
   return (
     <form
-      key={authMode}
       onSubmit={onSubmit}
-      className="flex flex-col gap-3 border-t border-zinc-800 px-4 py-4 animate-[fadeIn_220ms_ease-out] motion-reduce:animate-none"
+      className="border-t border-zinc-800 px-4 py-4"
       aria-labelledby={titleId}
     >
-      <div id={titleId} className="text-zinc-400">
-        {authMode === 'login' ? 'sign in to chat' : 'create an account'}
+      <div className="rail-content flex flex-col gap-4">
+        <h2 id={titleId} className="sr-only">
+          Sign in or create an account
+        </h2>
+
+      <div
+        role="group"
+        aria-label="Authentication mode"
+        className="grid grid-cols-2 gap-1 border border-zinc-800 bg-black/40 p-1"
+      >
+        <button
+          type="button"
+          onClick={() => selectMode('login')}
+          aria-pressed={authMode === 'login'}
+          disabled={authLoading}
+          className={`h-9 text-center transition disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sky-400/40 ${
+            authMode === 'login'
+              ? 'bg-zinc-800 font-medium text-zinc-50 shadow-[inset_0_-2px_0_0_var(--color-accent)]'
+              : 'text-zinc-500 hover:bg-zinc-900/60 hover:text-zinc-300'
+          }`}
+        >
+          sign in
+        </button>
+        <button
+          type="button"
+          onClick={() => selectMode('register')}
+          aria-pressed={authMode === 'register'}
+          disabled={authLoading}
+          className={`h-9 text-center transition disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sky-400/40 ${
+            authMode === 'register'
+              ? 'bg-zinc-800 font-medium text-zinc-50 shadow-[inset_0_-2px_0_0_var(--color-accent)]'
+              : 'text-zinc-500 hover:bg-zinc-900/60 hover:text-zinc-300'
+          }`}
+        >
+          create account
+        </button>
       </div>
+
+      <p className="text-zinc-500">
+        join the chat — no email or verification needed
+      </p>
+
       {chatError && (
         <div
           id={statusId}
@@ -64,40 +113,54 @@ export function ChatAuthForm({
           {chatError}
         </div>
       )}
-      <label htmlFor={nicknameId} className="sr-only">
-        Username
-      </label>
-      <input
-        id={nicknameId}
-        value={nickname}
-        onChange={(event) => onNicknameChange(event.target.value)}
-        placeholder="username"
-        autoComplete="username"
-        aria-invalid={Boolean(authError)}
-        aria-describedby={describedBy}
-        disabled={authLoading}
-        className="h-9 border border-zinc-700 bg-black/40 px-3 text-zinc-100 placeholder:text-zinc-600 focus:border-zinc-500 focus:outline-none"
-      />
-      <label htmlFor={passwordId} className="sr-only">
-        Password
-      </label>
-      <input
-        id={passwordId}
-        type="password"
-        value={password}
-        onChange={(event) => onPasswordChange(event.target.value)}
-        placeholder="password"
-        autoComplete={
-          authMode === 'login' ? 'current-password' : 'new-password'
-        }
-        aria-invalid={Boolean(authError)}
-        aria-describedby={describedBy}
-        disabled={authLoading}
-        className="h-9 border border-zinc-700 bg-black/40 px-3 text-zinc-100 placeholder:text-zinc-600 focus:border-zinc-500 focus:outline-none"
-      />
+
+      <div key={authMode} className="flex flex-col gap-3 animate-[fadeIn_220ms_ease-out] motion-reduce:animate-none">
+        <div className="group relative">
+          <label htmlFor={nicknameId} className="sr-only">
+            Username
+          </label>
+          <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500 transition-colors group-focus-within:text-sky-400">
+            <FontAwesomeIcon icon={faUser} className="text-[16px]" />
+          </span>
+          <input
+            id={nicknameId}
+            value={nickname}
+            onChange={(event) => onNicknameChange(event.target.value)}
+            placeholder="username"
+            autoComplete="username"
+            aria-invalid={Boolean(authError)}
+            aria-describedby={describedBy}
+            disabled={authLoading}
+            className={inputClasses}
+          />
+        </div>
+        <div className="group relative">
+          <label htmlFor={passwordId} className="sr-only">
+            Password
+          </label>
+          <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500 transition-colors group-focus-within:text-sky-400">
+            <FontAwesomeIcon icon={faLock} className="text-[16px]" />
+          </span>
+          <input
+            id={passwordId}
+            type="password"
+            value={password}
+            onChange={(event) => onPasswordChange(event.target.value)}
+            placeholder="password"
+            autoComplete={
+              authMode === 'login' ? 'current-password' : 'new-password'
+            }
+            aria-invalid={Boolean(authError)}
+            aria-describedby={describedBy}
+            disabled={authLoading}
+            className={inputClasses}
+          />
+        </div>
+      </div>
+
       <button
         type="submit"
-        className="h-9 border border-zinc-700 bg-zinc-900 px-3 text-zinc-100 transition hover:border-zinc-500 disabled:cursor-not-allowed disabled:opacity-60"
+        className="h-11 bg-gradient-to-r from-[var(--color-accent)] to-[var(--color-accent-strong)] font-semibold text-zinc-950 shadow-lg shadow-sky-500/20 transition hover:brightness-110 hover:shadow-sky-500/30 active:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/50 disabled:cursor-not-allowed disabled:opacity-60 disabled:shadow-none"
         disabled={authLoading}
       >
         {authLoading
@@ -106,6 +169,7 @@ export function ChatAuthForm({
             ? 'sign in'
             : 'create account'}
       </button>
+
       {authLoading && (
         <div
           id={authStatusId}
@@ -125,24 +189,12 @@ export function ChatAuthForm({
           {authError}
         </div>
       )}
-      {chatLoading && (
-        <div className="text-zinc-500" role="status" aria-live="polite">
-          loading recent chat…
-        </div>
-      )}
-      <button
-        type="button"
-        onClick={onAuthModeToggle}
-        disabled={authLoading}
-        className="group inline-flex w-fit items-center gap-1 text-left text-zinc-400 transition-colors duration-200 ease-out hover:text-zinc-100 focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-zinc-500 cursor-pointer"
-      >
-        {authMode === 'login'
-          ? 'need an account? create one'
-          : 'already have an account? sign in'}
-        <span className="text-zinc-500 transition-colors duration-200 ease-out group-hover:text-zinc-300">
-          →
-        </span>
-      </button>
+        {chatLoading && (
+          <div className="text-zinc-500" role="status" aria-live="polite">
+            loading recent chat…
+          </div>
+        )}
+      </div>
     </form>
   )
 }
