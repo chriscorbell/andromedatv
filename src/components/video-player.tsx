@@ -78,10 +78,10 @@ export function VideoPlayer({
   }, [isPlaybackDegraded, playbackOverlayVisible])
 
   return (
-    <div className="flex min-h-0 items-stretch lg:h-full">
+    <div className="flex h-full min-h-0 shrink-0 items-stretch justify-center bg-black">
       <div
         ref={videoFrameRef}
-        className="video-frame scanlines relative aspect-[4/3] h-auto w-full max-h-[60vh] overflow-hidden bg-black lg:h-full lg:w-auto lg:max-h-full"
+        className="video-frame scanlines relative aspect-[4/3] h-full w-auto overflow-hidden bg-black"
         onMouseMove={onMouseMove}
         onMouseEnter={onMouseEnter}
         onMouseLeave={onMouseLeave}

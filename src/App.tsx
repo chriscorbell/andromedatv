@@ -1,6 +1,6 @@
 import { lazy, Suspense } from 'react'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
-import { faCircleInfo } from '@fortawesome/free-solid-svg-icons'
+import { faCircleInfo, faShield } from '@fortawesome/free-solid-svg-icons'
 import andromedaIcon from './assets/andromeda.png'
 import { AboutModal } from './components/about-modal'
 import { ChatAuthForm } from './components/chat-auth-form'
@@ -58,7 +58,6 @@ function MainApp() {
     adminConfirm,
     adminMenu,
     adminMessageActions,
-    backToAdminMain,
     cancelAdminConfirm,
     closeAdminMenu,
     closeAdminMessageActions,
@@ -83,6 +82,7 @@ function MainApp() {
     handleRetryPlayback,
     handleToggleMute,
     handleVolumeChange,
+    getStreamDate,
     isMuted,
     playbackState,
     playbackStatusDetail,
@@ -108,63 +108,71 @@ function MainApp() {
     adminConfirm.visible
 
   return (
-    <div className="ui-body h-dvh w-full bg-[#050505] text-zinc-100">
-      <div className="flex h-full w-full flex-col border border-zinc-800">
-        <header className="flex h-12 items-center gap-3 border-b border-zinc-800 px-4 text-xs text-zinc-300">
-          <img
-            src={andromedaIcon}
-            alt="andromeda"
-            className="h-3.5 w-3.5 object-contain"
-          />
-          <span className="ui-header font-extrabold">andromeda</span>
-          <button
-            type="button"
-            className="ml-auto inline-flex h-6 w-6 items-center justify-center text-zinc-500 transition hover:text-zinc-200 cursor-pointer"
-            onClick={openInfo}
-            aria-label="About andromeda"
-          >
-            <FontAwesomeIcon icon={faCircleInfo} className="text-[16px]" />
-          </button>
-        </header>
-        <div className="layout-shell flex min-h-0 flex-1 flex-col animate-[fadeIn_700ms_ease-out] motion-reduce:animate-none lg:grid lg:grid-cols-[auto_minmax(240px,1fr)]">
-          <VideoPlayer
-            controlsVisible={controlsVisible}
-            isMuted={isMuted}
-            onFullscreen={handleFullscreen}
-            onMouseEnter={showControls}
-            onMouseLeave={scheduleHideControls}
-            onMouseMove={showControls}
-            onRetryPlayback={handleRetryPlayback}
-            onToggleMute={handleToggleMute}
-            onVolumeChange={handleVolumeChange}
-            playbackState={playbackState}
-            playbackStatusDetail={playbackStatusDetail}
-            videoFrameRef={videoFrameRef}
-            videoRef={videoRef}
-            volume={volume}
-          />
+    <div className="ui-body h-dvh w-full bg-black text-[var(--color-app-fg)]">
+      <div className="stage flex h-full w-full overflow-hidden">
+        <VideoPlayer
+          controlsVisible={controlsVisible}
+          isMuted={isMuted}
+          onFullscreen={handleFullscreen}
+          onMouseEnter={showControls}
+          onMouseLeave={scheduleHideControls}
+          onMouseMove={showControls}
+          onRetryPlayback={handleRetryPlayback}
+          onToggleMute={handleToggleMute}
+          onVolumeChange={handleVolumeChange}
+          playbackState={playbackState}
+          playbackStatusDetail={playbackStatusDetail}
+          videoFrameRef={videoFrameRef}
+          videoRef={videoRef}
+          volume={volume}
+        />
 
-          <aside className="flex min-h-0 flex-1 flex-col border-t border-zinc-800 lg:border-l lg:border-t-0">
-            <SchedulePanel
-              expandedScheduleKey={expandedScheduleKey}
-              onToggleItem={toggleScheduleItem}
-              onRetrySchedule={retrySchedule}
-              schedule={schedule}
-              scheduleState={scheduleState}
-              scheduleStatusDetail={scheduleStatusDetail}
-              syncTitleTooltip={syncScheduleTitleTooltip}
+        <aside className="sidebar flex min-h-0 min-w-[340px] flex-1 flex-col border-l border-[var(--color-edge)] animate-[fadeIn_700ms_ease-out] motion-reduce:animate-none">
+          <header className="topbar flex h-[60px] shrink-0 items-center gap-3 px-5">
+            <img
+              src={andromedaIcon}
+              alt="Andromeda"
+              className="h-3.5 w-3.5 object-contain"
             />
+            <span className="brand">Andromeda</span>
+            <div className="ml-auto flex items-center gap-1">
+              {authIsAdmin && authSessionActive && (
+                <button
+                  type="button"
+                  className="info-btn inline-flex h-7 w-7 items-center justify-center cursor-pointer"
+                  onClick={openAdminMenu}
+                  aria-label="Open admin menu"
+                >
+                  <FontAwesomeIcon icon={faShield} className="text-[15px]" />
+                </button>
+              )}
+              <button
+                type="button"
+                className="info-btn inline-flex h-7 w-7 items-center justify-center cursor-pointer"
+                onClick={openInfo}
+                aria-label="About Andromeda"
+              >
+                <FontAwesomeIcon icon={faCircleInfo} className="text-[17px]" />
+              </button>
+            </div>
+          </header>
 
-            <div className="flex min-h-0 flex-[2] flex-col border-t border-zinc-800">
-              <header className="flex h-12 items-center border-b border-zinc-800 px-4 text-zinc-300">
-                <span className="ui-header font-extrabold">chat</span>
-                {authNickname && (
-                  <span className="ml-auto text-zinc-500">
-                    signed in as <span className="text-zinc-200">{authNickname}</span>
-                  </span>
-                )}
-              </header>
-              {chatConnectionState !== 'live' && (
+          <SchedulePanel
+            expandedScheduleKey={expandedScheduleKey}
+            getStreamDate={getStreamDate}
+            onToggleItem={toggleScheduleItem}
+            onRetrySchedule={retrySchedule}
+            schedule={schedule}
+            scheduleState={scheduleState}
+            scheduleStatusDetail={scheduleStatusDetail}
+            syncTitleTooltip={syncScheduleTitleTooltip}
+          />
+
+          <div className="flex min-h-0 flex-1 flex-col border-t border-[var(--color-edge)]">
+            <div className="sec-head px-5 pt-3.5 pb-2">
+              <span>chat</span>
+            </div>
+            {chatConnectionState !== 'live' && (
                 <ServiceStatusBanner
                   detail={chatConnectionDetail}
                   label="chat status"
@@ -180,7 +188,7 @@ function MainApp() {
                 <>
                   <div
                     ref={chatScrollRef}
-                    className="scrollbar-minimal min-h-0 flex-1 overflow-y-auto"
+                    className="chat-fade scrollbar-minimal min-h-0 flex-1 overflow-y-auto"
                   >
                     <ChatMessageList
                       loading={chatLoading}
@@ -191,7 +199,7 @@ function MainApp() {
                     />
                   </div>
                   <ChatComposer
-                    authIsAdmin={authIsAdmin}
+                    authNickname={authNickname}
                     chatError={chatError}
                     chatLoading={chatLoading}
                     chatNotice={chatNotice}
@@ -201,7 +209,6 @@ function MainApp() {
                     messageStatus={messageStatus}
                     messageBody={messageBody}
                     onMessageBodyChange={handleMessageBodyChange}
-                    onOpenAdminMenu={openAdminMenu}
                     onSignOut={() => clearAuth()}
                     onSubmit={handleSendMessage}
                     textareaRef={chatInputRef}
@@ -211,7 +218,7 @@ function MainApp() {
                 <div className="flex min-h-0 flex-1 flex-col">
                   <div
                     ref={chatScrollRef}
-                    className="scrollbar-minimal min-h-0 flex-1 overflow-y-auto"
+                    className="chat-fade scrollbar-minimal min-h-0 flex-1 overflow-y-auto"
                   >
                     <ChatMessageList
                       loading={chatLoading}
@@ -238,7 +245,6 @@ function MainApp() {
               )}
             </div>
           </aside>
-        </div>
       </div>
       {shouldRenderAdminOverlays && (
         <Suspense fallback={null}>
@@ -246,7 +252,6 @@ function MainApp() {
             adminConfirm={adminConfirm}
             adminMenu={adminMenu}
             adminMessageActions={adminMessageActions}
-            onBack={() => void backToAdminMain()}
             onCancelConfirm={cancelAdminConfirm}
             onCloseMenu={closeAdminMenu}
             onCloseMessageActions={closeAdminMessageActions}

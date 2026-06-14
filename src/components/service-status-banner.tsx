@@ -24,11 +24,11 @@ function getStatusTitle(state: ServiceStatusBannerProps['state']) {
 function getStatusClasses(state: ServiceStatusBannerProps['state']) {
   switch (state) {
     case 'offline':
-      return 'border-rose-500/30 bg-rose-500/10 text-rose-100'
+      return 'border-[rgba(247,118,142,0.3)] bg-[rgba(247,118,142,0.1)] text-[var(--color-accent-red)]'
     case 'stale':
       return 'border-amber-500/30 bg-amber-500/10 text-amber-100'
     default:
-      return 'border-sky-500/30 bg-sky-500/10 text-zinc-100'
+      return 'border-[rgba(31,214,166,0.3)] bg-[var(--color-acc-tint)] text-[var(--color-app-fg)]'
   }
 }
 
