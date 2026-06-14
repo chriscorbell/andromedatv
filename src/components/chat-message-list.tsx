@@ -14,22 +14,26 @@ type ChatMessageListProps = {
   onAdminAction?: (messageId: number, nickname: string) => void
 }
 
-// Palette sampled from the design mockup — warm to cool, one assigned per user.
+// One color assigned per user. Green is fine, but the mint/teal/cyan around the
+// admin accent (var(--color-accent), #1fd6a6, hue ~164°) is omitted: the greens
+// here are clearly yellow-leaning grass/lime tones (hue ~142° and below, with far
+// less cyan) so no regular user reads as close to an admin — see
+// ADMIN_NICKNAME_COLOR below.
 const NICKNAME_COLORS = [
   '#fb923c', // orange
   '#f59e0b', // amber
   '#facc15', // yellow
-  '#4ade80', // green
   '#a3e635', // lime
-  '#2dd4bf', // teal
-  '#22d3ee', // cyan
+  '#4ade80', // green
+  '#38bdf8', // sky
   '#818cf8', // indigo
   '#c084fc', // purple
   '#f472b6', // pink
   '#fb7185', // rose
 ]
 
-const ADMIN_NICKNAME_COLOR = '#38bdf8' // bright sky — reserved for admins
+// Admins use the UI accent color so their name and shield read as one mark.
+const ADMIN_NICKNAME_COLOR = 'var(--color-accent)'
 
 function hashNickname(nickname: string) {
   let hash = 0
@@ -57,56 +61,57 @@ export function ChatMessageList({
   onAdminAction,
 }: ChatMessageListProps) {
   return (
-    <ul className="divide-y divide-zinc-800 border-b border-zinc-800">
+    <ul className="flex flex-col gap-2.5 px-5 pt-2 pb-3.5">
       {messages.length === 0 && !loading && (
-        <li className="px-4 py-6 text-zinc-500">
+        <li className="py-4 text-[0.875rem] text-[var(--color-faint)]">
           No messages yet.
         </li>
       )}
       {messages.map((entry) => (
         <li
           key={`${entry.id}`}
-          className="px-4 py-2 text-zinc-300 animate-[fadeIn_220ms_ease-out] motion-reduce:animate-none"
+          className="group flex items-start gap-2 animate-[fadeIn_220ms_ease-out] motion-reduce:animate-none"
         >
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              {(() => {
-                const nicknameColor = getNicknameColor(entry)
-                return (
-                  <span
-                    className={nicknameColor ? 'font-semibold' : 'text-zinc-500'}
-                    style={nicknameColor ? { color: nicknameColor } : undefined}
-                  >
-                    {entry.is_admin && (
-                      <FontAwesomeIcon
-                        icon={faShield}
-                        className="mr-1 text-[14px]"
-                        title="Admin"
-                      />
-                    )}
-                    {entry.nickname}
-                  </span>
-                )
-              })()}{' '}
-              {entry.body === 'message deleted' ? (
-                <span className="italic break-words whitespace-pre-wrap text-zinc-500">message deleted</span>
-              ) : entry.nickname === 'system' ? (
-                <span className="italic break-words whitespace-pre-wrap text-zinc-500">{entry.body}</span>
-              ) : (
-                <span className="break-words whitespace-pre-wrap">{entry.body}</span>
-              )}
-            </div>
-            {onAdminAction && (
-              <button
-                type="button"
-                className="inline-flex h-5 w-5 shrink-0 items-center justify-center text-zinc-500 transition hover:text-zinc-200 cursor-pointer"
-                aria-label="Message admin actions"
-                onClick={() => onAdminAction(entry.id, entry.nickname)}
-              >
-                <FontAwesomeIcon icon={faEllipsisVertical} className="text-[16px]" />
-              </button>
+          <div className="min-w-0 flex-1 text-[0.875rem] leading-[1.4] [overflow-wrap:anywhere]">
+            {(() => {
+              const nicknameColor = getNicknameColor(entry)
+              return (
+                <span
+                  className={
+                    nicknameColor ? 'font-bold' : 'text-[var(--color-faint)]'
+                  }
+                  style={nicknameColor ? { color: nicknameColor } : undefined}
+                >
+                  {entry.is_admin && (
+                    <FontAwesomeIcon
+                      icon={faShield}
+                      className="mr-1.5 text-[13px] text-[var(--color-accent)]"
+                      title="Admin"
+                    />
+                  )}
+                  {entry.nickname}
+                </span>
+              )
+            })()}
+            <span className="msg-colon">: </span>
+            {entry.body === 'message deleted' ? (
+              <span className="italic break-words whitespace-pre-wrap text-[var(--color-faint)]">message deleted</span>
+            ) : entry.nickname === 'system' ? (
+              <span className="italic break-words whitespace-pre-wrap text-[var(--color-faint)]">{entry.body}</span>
+            ) : (
+              <span className="break-words whitespace-pre-wrap text-[var(--color-app-fg)]">{entry.body}</span>
             )}
           </div>
+          {onAdminAction && (
+            <button
+              type="button"
+              className="inline-flex h-5 w-5 shrink-0 items-center justify-center text-[var(--color-faint)] opacity-0 transition hover:text-[var(--color-app-fg)] focus-visible:opacity-100 group-hover:opacity-100 cursor-pointer"
+              aria-label="Message admin actions"
+              onClick={() => onAdminAction(entry.id, entry.nickname)}
+            >
+              <FontAwesomeIcon icon={faEllipsisVertical} className="text-[15px]" />
+            </button>
+          )}
         </li>
       ))}
     </ul>
