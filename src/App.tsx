@@ -1,4 +1,6 @@
 import { lazy, Suspense } from 'react'
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
+import { faCircleInfo } from '@fortawesome/free-solid-svg-icons'
 import andromedaIcon from './assets/andromeda.png'
 import { AboutModal } from './components/about-modal'
 import { ChatAuthForm } from './components/chat-auth-form'
@@ -121,20 +123,7 @@ function MainApp() {
             onClick={openInfo}
             aria-label="About andromeda"
           >
-            <svg
-              viewBox="0 0 24 24"
-              className="h-4 w-4"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.7"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
-              <circle cx="12" cy="12" r="9" />
-              <path d="M12 10v6" />
-              <path d="M12 7h.01" />
-            </svg>
+            <FontAwesomeIcon icon={faCircleInfo} className="text-[16px]" />
           </button>
         </header>
         <div className="layout-shell flex min-h-0 flex-1 flex-col animate-[fadeIn_700ms_ease-out] motion-reduce:animate-none lg:grid lg:grid-cols-[auto_minmax(240px,1fr)]">

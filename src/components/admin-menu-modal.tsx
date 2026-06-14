@@ -1,4 +1,6 @@
 import { useId, useRef } from 'react'
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
+import { faArrowLeft, faXmark } from '@fortawesome/free-solid-svg-icons'
 import { useDialogFocus } from '../hooks/use-dialog-focus'
 import type { AdminAction, AdminMenuView, AdminUser } from '../types/admin'
 
@@ -78,19 +80,7 @@ export function AdminMenuModal({
                   onClick={onClose}
                   aria-label="Close admin menu"
                 >
-                  <svg
-                    viewBox="0 0 24 24"
-                    className="h-4 w-4"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.8"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    aria-hidden="true"
-                  >
-                    <path d="M6 6l12 12" />
-                    <path d="M18 6l-12 12" />
-                  </svg>
+                  <FontAwesomeIcon icon={faXmark} className="text-[16px]" />
                 </button>
               </div>
               <p id={descriptionId} className="mt-3 text-sm text-zinc-500">
@@ -127,11 +117,11 @@ export function AdminMenuModal({
               <div className="flex items-center gap-3 border-b border-zinc-800 px-6 py-4">
                 <button
                   type="button"
-                  className="text-zinc-500 transition hover:text-zinc-200 cursor-pointer"
+                  className="inline-flex h-6 w-6 items-center justify-center text-zinc-500 transition hover:text-zinc-200 cursor-pointer"
                   onClick={onBack}
                   aria-label="Back"
                 >
-                  ←
+                  <FontAwesomeIcon icon={faArrowLeft} className="text-[16px]" />
                 </button>
                 <div id={titleId} className="ui-header font-extrabold">
                   {view === 'active' ? 'active users' : 'banned users'}
@@ -143,19 +133,7 @@ export function AdminMenuModal({
                   onClick={onClose}
                   aria-label="Close admin menu"
                 >
-                  <svg
-                    viewBox="0 0 24 24"
-                    className="h-4 w-4"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.8"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    aria-hidden="true"
-                  >
-                    <path d="M6 6l12 12" />
-                    <path d="M18 6l-12 12" />
-                  </svg>
+                  <FontAwesomeIcon icon={faXmark} className="text-[16px]" />
                 </button>
               </div>
               <p id={descriptionId} className="px-6 pt-3 text-sm text-zinc-500">

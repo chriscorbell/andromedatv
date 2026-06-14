@@ -1,5 +1,11 @@
 import { useEffect, useState } from 'react'
 import type { ChangeEventHandler, RefObject } from 'react'
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
+import {
+  faExpand,
+  faVolumeHigh,
+  faVolumeXmark,
+} from '@fortawesome/free-solid-svg-icons'
 
 const PLAYBACK_OVERLAY_DELAY_MS = 5000
 
@@ -125,35 +131,9 @@ export function VideoPlayer({
               aria-label={isMuted ? 'Unmute' : 'Mute'}
             >
               {isMuted ? (
-                <svg
-                  viewBox="0 0 24 24"
-                  className="h-5 w-5"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  aria-hidden="true"
-                >
-                  <path d="M10 8.5L7.2 11H5v2h2.2l2.8 2.5V8.5z" />
-                  <path d="M15 9l4 6" />
-                  <path d="M19 9l-4 6" />
-                </svg>
+                <FontAwesomeIcon icon={faVolumeXmark} className="text-[20px]" />
               ) : (
-                <svg
-                  viewBox="0 0 24 24"
-                  className="h-5 w-5"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  aria-hidden="true"
-                >
-                  <path d="M10 8.5L7.2 11H5v2h2.2l2.8 2.5V8.5z" />
-                  <path d="M14 10a3 3 0 010 4" />
-                  <path d="M16.5 8a6 6 0 010 8" />
-                </svg>
+                <FontAwesomeIcon icon={faVolumeHigh} className="text-[20px]" />
               )}
             </button>
             <input
@@ -172,21 +152,7 @@ export function VideoPlayer({
               onClick={onFullscreen}
               aria-label="Toggle fullscreen"
             >
-              <svg
-                viewBox="0 0 24 24"
-                className="h-4 w-4"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden="true"
-              >
-                <path d="M8 4H4v4" />
-                <path d="M16 4h4v4" />
-                <path d="M4 16v4h4" />
-                <path d="M20 16v4h-4" />
-              </svg>
+              <FontAwesomeIcon icon={faExpand} className="text-[16px]" />
             </button>
           </div>
         </div>

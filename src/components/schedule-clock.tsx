@@ -130,7 +130,7 @@ export function ScheduleClock() {
   const clockLabel = clockParts.map((part) => part.value).join('')
 
   return (
-    <span className="clock ml-auto text-zinc-500" aria-label={clockLabel}>
+    <span className="clock font-data ml-auto text-zinc-500" aria-label={clockLabel}>
       {clockParts.map((part, index) =>
         part.type === 'literal' ? (
           <span

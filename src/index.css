@@ -1,18 +1,20 @@
-@import "https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap";
+@import "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap";
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "JetBrains Mono", "SFMono-Regular", Menlo, Monaco, Consolas,
+  --font-sans: "Inter", Arial, sans-serif;
+  --font-mono: "JetBrains Mono", "SFMono-Regular", Menlo, Monaco, Consolas,
     "Liberation Mono", "Courier New", monospace;
-  --font-mono: var(--font-sans);
   --default-font-family: var(--font-sans);
-  --default-mono-font-family: var(--font-sans);
+  --default-mono-font-family: var(--font-mono);
   --color-app-bg: #050505;
   --color-app-fg: #a9b1d6;
   --color-muted: #71717a;
   --color-subtle: #3f3f46;
   --color-subtle-strong: #52525b;
   --color-contrast: #a9b1d6;
+  --color-accent: #38bdf8;
+  --color-accent-strong: #22d3ee;
   --color-accent-red: #f7768e;
 }
 
@@ -26,11 +28,12 @@
 
 :root {
   color-scheme: dark;
-  font-family: "JetBrains Mono", "SFMono-Regular", Menlo, Monaco, Consolas,
-    "Liberation Mono", "Courier New", monospace;
+  font-family: var(--font-sans);
   font-size: 16px;
-  --text-body: 0.8rem;
-  --text-header: 1.1rem;
+  font-weight: 500;
+  --text-body: 1rem;
+  --text-header: 1.6rem;
+  --rail-content-max: 32rem;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -75,7 +78,32 @@ button:disabled {
 
 .ui-header {
   font-size: var(--text-header);
+  font-weight: 700;
   line-height: 1.1;
+  letter-spacing: -0.01em;
+}
+
+/* The right rail flexes to keep the video locked at 4:3, so its width is
+   unbounded on wide displays. Cap the reading content (chat + forms) to a
+   comfortable column and centre it; panel chrome stays full-bleed. */
+.rail-content {
+  width: 100%;
+  max-width: var(--rail-content-max);
+  margin-inline: auto;
+}
+
+/* Multi-line copy (episode blurbs, about text) reads better with looser leading. */
+.prose-body {
+  font-size: 1rem;
+  line-height: 1.5;
+  letter-spacing: 0.005em;
+}
+
+/* Clock and schedule times: monospace with tabular figures so digits align. */
+.font-data {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
 }
 
 .clock {
@@ -237,6 +265,36 @@ button:disabled {
 
 .schedule-row {
   cursor: pointer;
+}
+
+/* Schedule times read as secondary data — a notch smaller than the row title. */
+.schedule-time {
+  font-size: 0.9rem;
+}
+
+/* Full-bleed, square hover that lifts the row without graying the cyan tint. */
+.schedule-row[data-clickable='true']:hover {
+  background-color: rgba(255, 255, 255, 0.04);
+}
+
+.schedule-row[data-clickable='true']:hover .schedule-title {
+  color: #e4e4e7;
+}
+
+.schedule-row-live {
+  background-color: rgba(56, 189, 248, 0.08);
+  box-shadow: inset 3px 0 0 var(--color-accent);
+}
+
+/* The currently-playing title reads brighter, matching chat messages (zinc-300). */
+.schedule-row-live .schedule-title {
+  color: #d4d4d8;
+}
+
+/* The header button covers the row's left bar — redraw it on the button itself
+   so the hover background paints behind it and the accent stays visible. */
+.schedule-row-live > .schedule-row {
+  box-shadow: inset 3px 0 0 var(--color-accent);
 }
 
 .schedule-row[data-clickable='false'] {

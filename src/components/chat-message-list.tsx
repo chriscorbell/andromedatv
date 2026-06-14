@@ -1,3 +1,6 @@
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
+import { faEllipsisVertical, faShield } from '@fortawesome/free-solid-svg-icons'
+
 type ChatMessageListEntry = {
   id: number
   nickname: string
@@ -11,16 +14,41 @@ type ChatMessageListProps = {
   onAdminAction?: (messageId: number, nickname: string) => void
 }
 
-function getNicknameClass(entry: ChatMessageListEntry) {
+// Palette sampled from the design mockup — warm to cool, one assigned per user.
+const NICKNAME_COLORS = [
+  '#fb923c', // orange
+  '#f59e0b', // amber
+  '#facc15', // yellow
+  '#4ade80', // green
+  '#a3e635', // lime
+  '#2dd4bf', // teal
+  '#22d3ee', // cyan
+  '#818cf8', // indigo
+  '#c084fc', // purple
+  '#f472b6', // pink
+  '#fb7185', // rose
+]
+
+const ADMIN_NICKNAME_COLOR = '#38bdf8' // bright sky — reserved for admins
+
+function hashNickname(nickname: string) {
+  let hash = 0
+  for (let index = 0; index < nickname.length; index += 1) {
+    hash = (hash * 31 + nickname.charCodeAt(index)) >>> 0
+  }
+  return hash
+}
+
+function getNicknameColor(entry: ChatMessageListEntry) {
   if (entry.nickname === 'system') {
-    return 'text-[#f7768e]'
+    return undefined
   }
 
   if (entry.is_admin) {
-    return 'text-[#73daca]'
+    return ADMIN_NICKNAME_COLOR
   }
 
-  return 'text-zinc-100'
+  return NICKNAME_COLORS[hashNickname(entry.nickname) % NICKNAME_COLORS.length]
 }
 
 export function ChatMessageList({
@@ -29,7 +57,7 @@ export function ChatMessageList({
   onAdminAction,
 }: ChatMessageListProps) {
   return (
-    <ul className="divide-y divide-zinc-800">
+    <ul className="divide-y divide-zinc-800 border-b border-zinc-800">
       {messages.length === 0 && !loading && (
         <li className="px-4 py-6 text-zinc-500">
           No messages yet.
@@ -38,13 +66,28 @@ export function ChatMessageList({
       {messages.map((entry) => (
         <li
           key={`${entry.id}`}
-          className="px-4 py-2 text-zinc-400 animate-[fadeIn_220ms_ease-out] motion-reduce:animate-none"
+          className="px-4 py-2 text-zinc-300 animate-[fadeIn_220ms_ease-out] motion-reduce:animate-none"
         >
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <span className={getNicknameClass(entry)}>
-                {entry.nickname}
-              </span>{' '}
+              {(() => {
+                const nicknameColor = getNicknameColor(entry)
+                return (
+                  <span
+                    className={nicknameColor ? 'font-semibold' : 'text-zinc-500'}
+                    style={nicknameColor ? { color: nicknameColor } : undefined}
+                  >
+                    {entry.is_admin && (
+                      <FontAwesomeIcon
+                        icon={faShield}
+                        className="mr-1 text-[14px]"
+                        title="Admin"
+                      />
+                    )}
+                    {entry.nickname}
+                  </span>
+                )
+              })()}{' '}
               {entry.body === 'message deleted' ? (
                 <span className="italic break-words whitespace-pre-wrap text-zinc-500">message deleted</span>
               ) : entry.nickname === 'system' ? (
@@ -60,16 +103,7 @@ export function ChatMessageList({
                 aria-label="Message admin actions"
                 onClick={() => onAdminAction(entry.id, entry.nickname)}
               >
-                <svg
-                  viewBox="0 0 24 24"
-                  className="h-3.5 w-3.5"
-                  fill="currentColor"
-                  aria-hidden="true"
-                >
-                  <circle cx="12" cy="5" r="1.8" />
-                  <circle cx="12" cy="12" r="1.8" />
-                  <circle cx="12" cy="19" r="1.8" />
-                </svg>
+                <FontAwesomeIcon icon={faEllipsisVertical} className="text-[16px]" />
               </button>
             )}
           </div>
