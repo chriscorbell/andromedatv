@@ -14,37 +14,37 @@ test('homepage loads and expanded schedule details are visible', async ({ page }
   await expect(page.getByText('Pilot & more')).toBeVisible()
 })
 
-test('chat register flow works and user can sign out again', async ({ page }, testInfo) => {
+test('chat register flow works and user can log out again', async ({ page }, testInfo) => {
   await page.goto('/')
 
   const nickname = `smoke${Date.now().toString().slice(-6)}${testInfo.retry}`
 
-  const authModes = page.getByRole('group', { name: 'Authentication mode' })
-  await authModes.getByRole('button', { name: 'create account' }).click()
+  await page.getByRole('button', { name: 'create account' }).click()
   await page.getByLabel('Username').fill(nickname)
   await page.getByLabel('Password').fill('hunter2')
   await page.locator('form button[type="submit"]').click()
 
-  await expect(page.getByText(/signed in as/i)).toContainText(nickname)
-  await expect(page.getByRole('button', { name: 'sign out' })).toBeVisible()
+  await expect(page.getByText(/logged in as/i)).toContainText(nickname)
+  await expect(page.getByRole('button', { name: 'Log Out' })).toBeVisible()
 
-  await page.getByRole('button', { name: 'sign out' }).click()
+  await page.getByRole('button', { name: 'Log Out' }).click()
 
-  await expect(authModes.getByRole('button', { name: 'sign in' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'log in' })).toBeVisible()
 })
 
 test('admin can open and close the admin menu dialog', async ({ page }) => {
   await page.goto('/')
 
+  await page.getByRole('button', { name: 'log in' }).click()
   await page.getByLabel('Username').fill('andromedatv')
   await page.getByLabel('Password').fill('supersecret')
   await page.locator('form button[type="submit"]').click()
 
-  await expect(page.getByText(/signed in as/i)).toContainText('andromedatv')
+  await expect(page.getByText(/logged in as/i)).toContainText('andromedatv')
 
   await page.getByRole('button', { name: 'Open admin menu' }).click()
 
-  const dialog = page.getByRole('dialog', { name: 'admin' })
+  const dialog = page.getByRole('dialog', { name: /admin/i })
   await expect(dialog).toBeVisible()
 
   await page.keyboard.press('Escape')
