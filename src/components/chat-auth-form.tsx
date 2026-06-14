@@ -53,7 +53,7 @@ export function ChatAuthForm({
   }
 
   const inputClasses =
-    'h-11 w-full border border-zinc-700 bg-zinc-900/40 pl-10 pr-3 text-zinc-100 placeholder:text-zinc-600 transition focus:border-sky-400/70 focus:bg-zinc-900/70 focus:outline-none focus:ring-1 focus:ring-sky-400/30 disabled:opacity-60'
+    'h-11 w-full border border-zinc-700 bg-zinc-900/40 pl-10 pr-3 text-zinc-100 placeholder:text-zinc-600 transition focus:border-[color-mix(in_srgb,var(--color-accent)_70%,transparent)] focus:bg-zinc-900/70 focus:outline-none focus:ring-1 focus:ring-[color-mix(in_srgb,var(--color-accent)_30%,transparent)] disabled:opacity-60'
 
   return (
     <form
@@ -100,7 +100,7 @@ export function ChatAuthForm({
       </div>
 
       <p className="text-zinc-500">
-        join the chat — no email or verification needed
+        join us. no email or verification needed.
       </p>
 
       {chatError && (
@@ -119,7 +119,7 @@ export function ChatAuthForm({
           <label htmlFor={nicknameId} className="sr-only">
             Username
           </label>
-          <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500 transition-colors group-focus-within:text-sky-400">
+          <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500 transition-colors group-focus-within:text-[var(--color-accent)]">
             <FontAwesomeIcon icon={faUser} className="text-[16px]" />
           </span>
           <input
@@ -138,7 +138,7 @@ export function ChatAuthForm({
           <label htmlFor={passwordId} className="sr-only">
             Password
           </label>
-          <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500 transition-colors group-focus-within:text-sky-400">
+          <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500 transition-colors group-focus-within:text-[var(--color-accent)]">
             <FontAwesomeIcon icon={faLock} className="text-[16px]" />
           </span>
           <input

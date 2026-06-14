@@ -100,8 +100,8 @@ export function SchedulePanel({
                   </span>
                   <span className="flex shrink-0 items-center gap-2 whitespace-nowrap">
                     {item.live ? (
-                      <span className="flex items-center gap-2 whitespace-nowrap font-extrabold tracking-wider text-[#00ddff]">
-                        <span className="inline-flex h-1.5 w-1.5 rounded-full bg-[#00ddff]" />
+                      <span className="flex items-center gap-2 whitespace-nowrap font-extrabold tracking-wider text-[var(--color-accent)]">
+                        <span className="inline-flex h-1.5 w-1.5 rounded-full bg-[var(--color-accent)]" />
                         LIVE
                       </span>
                     ) : (
