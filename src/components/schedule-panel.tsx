@@ -133,7 +133,7 @@ export function SchedulePanel({
               >
                 <button
                   type="button"
-                  className="schedule-row flex w-full items-center gap-2.5 px-2 py-2.5 text-left transition-colors"
+                  className="schedule-row flex w-full items-center gap-2 px-2 py-2.5 text-left transition-colors"
                   onClick={() => onToggleItem(itemKey)}
                   aria-expanded={isExpanded}
                   data-expanded={isExpanded}
@@ -141,10 +141,15 @@ export function SchedulePanel({
                   disabled={!hasDetails}
                 >
                   {hasDetails && (
-                    <FontAwesomeIcon
-                      icon={faChevronDown}
-                      className="schedule-chevron shrink-0 text-[12px]"
-                    />
+                    // Fixed-width box so the title's left edge is deterministic
+                    // (px-2 + w-3 + gap-2 = 1.75rem) and the expanded details can
+                    // align to it exactly — see .schedule-details padding-left.
+                    <span className="flex w-3 shrink-0 items-center justify-center">
+                      <FontAwesomeIcon
+                        icon={faChevronDown}
+                        className="schedule-chevron text-[11px]"
+                      />
+                    </span>
                   )}
                   <span className="schedule-title flex min-w-0 flex-1 items-center gap-2">
                     {isLive && <span className="now-dot" />}
