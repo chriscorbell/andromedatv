@@ -121,19 +121,19 @@ export function VideoPlayer({
           </div>
         )}
         <div
-          className={`pointer-events-none absolute bottom-2 right-2 inline-flex items-center justify-end bg-black/60 px-3 py-2 text-[11px] text-zinc-200 transition-opacity duration-200 ${controlsVisible ? 'opacity-100' : 'opacity-0'}`}
+          className={`pointer-events-none absolute bottom-3 right-3 inline-flex items-center justify-end border border-white/10 bg-black/60 px-1.5 py-1 text-zinc-200 shadow-lg shadow-black/40 backdrop-blur-md transition-opacity duration-200 ${controlsVisible ? 'opacity-100' : 'opacity-0'}`}
         >
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1">
             <button
               type="button"
-              className="pointer-events-auto inline-flex h-6 w-6 items-center justify-center border border-zinc-700 text-zinc-200 transition hover:border-zinc-400"
+              className="pointer-events-auto inline-flex h-8 w-8 items-center justify-center text-zinc-300 transition-colors hover:bg-white/10 hover:text-white"
               onClick={onToggleMute}
               aria-label={isMuted ? 'Unmute' : 'Mute'}
             >
               {isMuted ? (
-                <FontAwesomeIcon icon={faVolumeXmark} className="text-[20px]" />
+                <FontAwesomeIcon icon={faVolumeXmark} className="text-[15px]" />
               ) : (
-                <FontAwesomeIcon icon={faVolumeHigh} className="text-[20px]" />
+                <FontAwesomeIcon icon={faVolumeHigh} className="text-[15px]" />
               )}
             </button>
             <input
@@ -143,16 +143,19 @@ export function VideoPlayer({
               step={0.02}
               value={volume}
               onChange={onVolumeChange}
-              className="volume-slider pointer-events-auto h-1 w-24 cursor-pointer"
+              style={{
+                background: `linear-gradient(to right, var(--color-accent) 0%, var(--color-accent) ${(isMuted ? 0 : volume) * 100}%, rgba(255,255,255,0.18) ${(isMuted ? 0 : volume) * 100}%, rgba(255,255,255,0.18) 100%)`,
+              }}
+              className="volume-slider pointer-events-auto mx-1 h-1 w-24 cursor-pointer"
               aria-label="Volume"
             />
             <button
               type="button"
-              className="pointer-events-auto border border-zinc-700 p-1 text-zinc-200 transition hover:border-zinc-400"
+              className="pointer-events-auto inline-flex h-8 w-8 items-center justify-center text-zinc-300 transition-colors hover:bg-white/10 hover:text-white"
               onClick={onFullscreen}
               aria-label="Toggle fullscreen"
             >
-              <FontAwesomeIcon icon={faExpand} className="text-[16px]" />
+              <FontAwesomeIcon icon={faExpand} className="text-[15px]" />
             </button>
           </div>
         </div>
