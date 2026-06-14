@@ -1,7 +1,27 @@
-import { useId } from 'react'
+import { useId, useLayoutEffect, useRef, useState } from 'react'
 import type { FormEventHandler } from 'react'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
-import { faLock, faUser } from '@fortawesome/free-solid-svg-icons'
+import { faChevronLeft, faLock, faUser } from '@fortawesome/free-solid-svg-icons'
+
+// Structural rows fade up in sequence so a view assembles instead of snapping
+// in. Indices are cascade positions; the `both` fill keeps later rows hidden
+// until their turn, and motion-reduce drops the motion entirely. Strings are
+// spelled out in full so Tailwind's scanner can see them.
+const stagger = [
+  'animate-[fadeIn_260ms_ease-out_both] motion-reduce:animate-none',
+  'animate-[fadeIn_260ms_ease-out_70ms_both] motion-reduce:animate-none',
+  'animate-[fadeIn_260ms_ease-out_140ms_both] motion-reduce:animate-none',
+  'animate-[fadeIn_260ms_ease-out_210ms_both] motion-reduce:animate-none',
+] as const
+
+// For blocks that appear in response to an action (status/error) rather than as
+// part of the initial reveal — a plain fade with no stagger delay.
+const revealNow = 'animate-[fadeIn_200ms_ease-out] motion-reduce:animate-none'
+
+// Mode-dependent labels (title, submit, toggle link) crossfade when switching
+// between sign-in and create-account instead of swapping instantly. Apply to a
+// span keyed by authMode so React remounts it and the fade re-runs each toggle.
+const swap = 'animate-[fadeSwap_200ms_ease-out] motion-reduce:animate-none'
 
 type ChatAuthFormProps = {
   authError: string | null
@@ -36,6 +56,51 @@ export function ChatAuthForm({
   const statusId = useId()
   const errorId = useId()
   const authStatusId = useId()
+  // Open the credential form straight away if an attempt is already underway
+  // (loading or carrying an error); otherwise start on the two-button choice.
+  const [showForm, setShowForm] = useState(
+    () => authLoading || Boolean(authError),
+  )
+
+  // Smoothly grow/shrink the panel as its content changes height (e.g. switching
+  // from the two-button choice to the taller credential form, or when an
+  // error/status row appears). We measure with a FLIP: pin the previous height,
+  // then transition to the freshly-rendered one. Runs before paint so the jump
+  // is never visible. Honours prefers-reduced-motion by skipping the animation.
+  const contentRef = useRef<HTMLDivElement | null>(null)
+  const previousHeight = useRef<number | null>(null)
+  useLayoutEffect(() => {
+    const el = contentRef.current
+    if (!el) return
+
+    const nextHeight = el.offsetHeight
+    const prev = previousHeight.current
+    previousHeight.current = nextHeight
+
+    // Nothing to animate on first render or when the height is unchanged.
+    if (prev === null || prev === nextHeight) return
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return
+
+    el.style.height = `${prev}px`
+    el.style.overflow = 'hidden'
+    void el.offsetHeight // force reflow so the start height registers
+    el.style.height = `${nextHeight}px`
+
+    const handleEnd = (event: TransitionEvent) => {
+      if (event.propertyName !== 'height') return
+      el.style.height = ''
+      el.style.overflow = ''
+      el.removeEventListener('transitionend', handleEnd)
+    }
+    el.addEventListener('transitionend', handleEnd)
+
+    return () => {
+      el.removeEventListener('transitionend', handleEnd)
+      el.style.height = ''
+      el.style.overflow = ''
+    }
+  }, [showForm, authMode, authLoading, authError, chatError, chatLoading])
+
   const describedBy = [
     chatError ? statusId : null,
     authError ? errorId : null,
@@ -52,148 +117,207 @@ export function ChatAuthForm({
     }
   }
 
+  const openForm = (mode: 'login' | 'register') => {
+    selectMode(mode)
+    setShowForm(true)
+  }
+
+  const chatErrorBanner = chatError ? (
+    <div
+      id={statusId}
+      className={`rounded-lg border border-[rgba(31,214,166,0.3)] bg-[var(--color-acc-tint)] px-3 py-2 text-[0.825rem] text-[var(--color-app-fg)] ${stagger[1]}`}
+      role="status"
+      aria-live="polite"
+    >
+      {chatError}
+    </div>
+  ) : null
+
   const inputClasses =
-    'h-11 w-full border border-zinc-700 bg-zinc-900/40 pl-10 pr-3 text-zinc-100 placeholder:text-zinc-600 transition focus:border-[color-mix(in_srgb,var(--color-accent)_70%,transparent)] focus:bg-zinc-900/70 focus:outline-none focus:ring-1 focus:ring-[color-mix(in_srgb,var(--color-accent)_30%,transparent)] disabled:opacity-60'
+    'h-11 w-full rounded-lg border border-[var(--color-edge)] bg-[var(--color-raised2)] pl-10 pr-3 text-[0.9rem] text-[var(--color-app-fg)] placeholder:text-[var(--color-faint)] transition focus:border-[rgba(31,214,166,0.5)] focus:outline-none disabled:opacity-60'
 
   return (
     <form
       onSubmit={onSubmit}
-      className="border-t border-zinc-800 px-4 py-4"
+      className="shrink-0 border-t border-[var(--color-edge)] bg-[var(--color-raised)] px-4 py-4"
       aria-labelledby={titleId}
     >
-      <div className="rail-content flex flex-col gap-4">
-        <h2 id={titleId} className="sr-only">
-          Sign in or create an account
-        </h2>
+      <h2 id={titleId} className="sr-only">
+        Log in or create an account
+      </h2>
 
-      <div
-        role="group"
-        aria-label="Authentication mode"
-        className="grid grid-cols-2 gap-1 border border-zinc-800 bg-black/40 p-1"
-      >
-        <button
-          type="button"
-          onClick={() => selectMode('login')}
-          aria-pressed={authMode === 'login'}
-          disabled={authLoading}
-          className={`h-9 text-center transition disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sky-400/40 ${
-            authMode === 'login'
-              ? 'bg-zinc-800 font-medium text-zinc-50 shadow-[inset_0_-2px_0_0_var(--color-accent)]'
-              : 'text-zinc-500 hover:bg-zinc-900/60 hover:text-zinc-300'
-          }`}
-        >
-          sign in
-        </button>
-        <button
-          type="button"
-          onClick={() => selectMode('register')}
-          aria-pressed={authMode === 'register'}
-          disabled={authLoading}
-          className={`h-9 text-center transition disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sky-400/40 ${
-            authMode === 'register'
-              ? 'bg-zinc-800 font-medium text-zinc-50 shadow-[inset_0_-2px_0_0_var(--color-accent)]'
-              : 'text-zinc-500 hover:bg-zinc-900/60 hover:text-zinc-300'
-          }`}
-        >
-          create account
-        </button>
-      </div>
-
-      <p className="text-zinc-500">
-        join us. no email or verification needed.
-      </p>
-
-      {chatError && (
+      <div className="rail-content">
         <div
-          id={statusId}
-          className="border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-zinc-100"
-          role="status"
-          aria-live="polite"
+          ref={contentRef}
+          className="transition-[height] duration-300 ease-out motion-reduce:transition-none"
         >
-          {chatError}
-        </div>
-      )}
+          <div
+            key={showForm ? 'form' : 'choice'}
+            className="flex flex-col gap-4"
+          >
+            {!showForm ? (
+              <>
+                <div className={stagger[0]}>
+                  <div className="text-[0.95rem] font-bold text-[var(--color-app-fg)]">
+                    Join the conversation.
+                  </div>
+                  <p className="mt-0.5 text-[0.825rem] text-[var(--color-muted)]">
+                    Log in to chat. No email or verification needed.
+                  </p>
+                </div>
 
-      <div key={authMode} className="flex flex-col gap-3 animate-[fadeIn_220ms_ease-out] motion-reduce:animate-none">
-        <div className="group relative">
-          <label htmlFor={nicknameId} className="sr-only">
-            Username
-          </label>
-          <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500 transition-colors group-focus-within:text-[var(--color-accent)]">
-            <FontAwesomeIcon icon={faUser} className="text-[16px]" />
-          </span>
-          <input
-            id={nicknameId}
-            value={nickname}
-            onChange={(event) => onNicknameChange(event.target.value)}
-            placeholder="username"
-            autoComplete="username"
-            aria-invalid={Boolean(authError)}
-            aria-describedby={describedBy}
-            disabled={authLoading}
-            className={inputClasses}
-          />
-        </div>
-        <div className="group relative">
-          <label htmlFor={passwordId} className="sr-only">
-            Password
-          </label>
-          <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500 transition-colors group-focus-within:text-[var(--color-accent)]">
-            <FontAwesomeIcon icon={faLock} className="text-[16px]" />
-          </span>
-          <input
-            id={passwordId}
-            type="password"
-            value={password}
-            onChange={(event) => onPasswordChange(event.target.value)}
-            placeholder="password"
-            autoComplete={
-              authMode === 'login' ? 'current-password' : 'new-password'
-            }
-            aria-invalid={Boolean(authError)}
-            aria-describedby={describedBy}
-            disabled={authLoading}
-            className={inputClasses}
-          />
-        </div>
-      </div>
+                {chatErrorBanner}
 
-      <button
-        type="submit"
-        className="h-11 bg-gradient-to-r from-[var(--color-accent)] to-[var(--color-accent-strong)] font-semibold text-zinc-950 shadow-lg shadow-sky-500/20 transition hover:brightness-110 hover:shadow-sky-500/30 active:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/50 disabled:cursor-not-allowed disabled:opacity-60 disabled:shadow-none"
-        disabled={authLoading}
-      >
-        {authLoading
-          ? 'working…'
-          : authMode === 'login'
-            ? 'sign in'
-            : 'create account'}
-      </button>
+                <div className={`flex gap-2.5 ${stagger[1]}`}>
+                  <button
+                    type="button"
+                    onClick={() => openForm('login')}
+                    className="h-10 flex-1 rounded-lg bg-[var(--color-accent)] text-[0.875rem] font-bold text-[var(--color-acc-ink)] transition hover:brightness-105 active:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(31,214,166,0.5)]"
+                  >
+                    Log In
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => openForm('register')}
+                    className="h-10 flex-1 rounded-lg border border-[var(--color-edge)] text-[0.875rem] font-bold text-[var(--color-app-fg)] transition hover:bg-white/[0.04] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(31,214,166,0.5)]"
+                  >
+                    Create Account
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className={`flex items-center gap-2 ${stagger[0]}`}>
+                  <button
+                    type="button"
+                    onClick={() => setShowForm(false)}
+                    aria-label="Back"
+                    className="info-btn -ml-1 inline-flex h-7 w-7 items-center justify-center cursor-pointer"
+                  >
+                    <FontAwesomeIcon icon={faChevronLeft} className="text-[14px]" />
+                  </button>
+                  <div className="text-[0.95rem] font-bold text-[var(--color-app-fg)]">
+                    <span key={authMode} className={swap}>
+                      {authMode === 'login' ? 'Log In' : 'Create Account'}
+                    </span>
+                  </div>
+                </div>
 
-      {authLoading && (
-        <div
-          id={authStatusId}
-          className="border border-zinc-700 bg-zinc-900/70 px-3 py-2 text-zinc-300"
-          role="status"
-          aria-live="polite"
-        >
-          {authPendingMessage}
-        </div>
-      )}
-      {authError && (
-        <div
-          id={errorId}
-          className="border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-rose-100"
-          role="alert"
-        >
-          {authError}
-        </div>
-      )}
-        {chatLoading && (
-          <div className="text-zinc-500" role="status" aria-live="polite">
-            loading recent chat…
+                {chatErrorBanner}
+
+                <div className={`flex flex-col gap-3 ${stagger[1]}`}>
+                  <div className="group relative">
+                    <label htmlFor={nicknameId} className="sr-only">
+                      Username
+                    </label>
+                    <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--color-faint)] transition-colors group-focus-within:text-[var(--color-accent)]">
+                      <FontAwesomeIcon icon={faUser} className="text-[15px]" />
+                    </span>
+                    <input
+                      id={nicknameId}
+                      value={nickname}
+                      onChange={(event) => onNicknameChange(event.target.value)}
+                      placeholder="Username"
+                      autoComplete="username"
+                      aria-invalid={Boolean(authError)}
+                      aria-describedby={describedBy}
+                      disabled={authLoading}
+                      className={inputClasses}
+                    />
+                  </div>
+                  <div className="group relative">
+                    <label htmlFor={passwordId} className="sr-only">
+                      Password
+                    </label>
+                    <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--color-faint)] transition-colors group-focus-within:text-[var(--color-accent)]">
+                      <FontAwesomeIcon icon={faLock} className="text-[15px]" />
+                    </span>
+                    <input
+                      id={passwordId}
+                      type="password"
+                      value={password}
+                      onChange={(event) => onPasswordChange(event.target.value)}
+                      placeholder="Password"
+                      autoComplete={
+                        authMode === 'login' ? 'current-password' : 'new-password'
+                      }
+                      aria-invalid={Boolean(authError)}
+                      aria-describedby={describedBy}
+                      disabled={authLoading}
+                      className={inputClasses}
+                    />
+                  </div>
+                </div>
+
+                <button
+                  type="submit"
+                  className={`h-11 rounded-lg bg-[var(--color-accent)] text-[0.9rem] font-extrabold text-[var(--color-acc-ink)] transition hover:brightness-105 active:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(31,214,166,0.5)] disabled:cursor-not-allowed disabled:opacity-60 ${stagger[2]}`}
+                  disabled={authLoading}
+                >
+                  <span key={authMode} className={swap}>
+                    {authLoading
+                      ? 'Working…'
+                      : authMode === 'login'
+                        ? 'Log In'
+                        : 'Create Account'}
+                  </span>
+                </button>
+
+                {authLoading && (
+                  <div
+                    id={authStatusId}
+                    className={`rounded-lg border border-[var(--color-edge)] bg-[var(--color-raised2)] px-3 py-2 text-[0.825rem] text-[var(--color-muted)] ${revealNow}`}
+                    role="status"
+                    aria-live="polite"
+                  >
+                    {authPendingMessage}
+                  </div>
+                )}
+                {authError && (
+                  <div
+                    id={errorId}
+                    className={`rounded-lg border border-[rgba(247,118,142,0.3)] bg-[rgba(247,118,142,0.1)] px-3 py-2 text-[0.825rem] text-[var(--color-accent-red)] ${revealNow}`}
+                    role="alert"
+                  >
+                    {authError}
+                  </div>
+                )}
+                {chatLoading && (
+                  <div className="text-[0.825rem] text-[var(--color-faint)]" role="status" aria-live="polite">
+                    loading recent chat…
+                  </div>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() =>
+                    selectMode(authMode === 'login' ? 'register' : 'login')
+                  }
+                  disabled={authLoading}
+                  className={`group self-start text-[0.8rem] text-[var(--color-muted)] disabled:opacity-60 focus-visible:outline-none ${stagger[3]}`}
+                >
+                  <span key={authMode} className={swap}>
+                    {authMode === 'login' ? (
+                      <>
+                        First time here?{' '}
+                        <span className="font-semibold text-[var(--color-accent)] underline-offset-2 transition group-hover:underline group-hover:brightness-110 group-focus-visible:underline">
+                          Create Account
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        Already have an account?{' '}
+                        <span className="font-semibold text-[var(--color-accent)] underline-offset-2 transition group-hover:underline group-hover:brightness-110 group-focus-visible:underline">
+                          Log In
+                        </span>
+                      </>
+                    )}
+                  </span>
+                </button>
+              </>
+            )}
           </div>
-        )}
+        </div>
       </div>
     </form>
   )

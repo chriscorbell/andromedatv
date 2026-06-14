@@ -1,10 +1,7 @@
-import { useId } from 'react'
+import { useEffect, useId, useRef } from 'react'
 import type { FormEventHandler, RefObject } from 'react'
-import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
-import { faPaperPlane, faShield } from '@fortawesome/free-solid-svg-icons'
-
 type ChatComposerProps = {
-  authIsAdmin: boolean
+  authNickname: string | null
   chatError: string | null
   chatLoading: boolean
   chatNotice: string | null
@@ -14,14 +11,13 @@ type ChatComposerProps = {
   messageStatus: string | null
   messageBody: string
   onMessageBodyChange: (value: string) => void
-  onOpenAdminMenu: () => void
   onSignOut: () => void
   onSubmit: FormEventHandler<HTMLFormElement>
   textareaRef: RefObject<HTMLTextAreaElement | null>
 }
 
 export function ChatComposer({
-  authIsAdmin,
+  authNickname,
   chatError,
   chatLoading,
   chatNotice,
@@ -31,7 +27,6 @@ export function ChatComposer({
   messageStatus,
   messageBody,
   onMessageBodyChange,
-  onOpenAdminMenu,
   onSignOut,
   onSubmit,
   textareaRef,
@@ -49,22 +44,100 @@ export function ChatComposer({
   ].filter(Boolean).join(' ') || undefined
   const composerDisabled = disabled || messageSending
 
+  // After a send finishes, return focus to the box (it was blurred while
+  // disabled, or focus moved to the Send button on click) so the next message
+  // can be typed straight away. Reset the auto-grown height once it's cleared.
+  const wasSendingRef = useRef(false)
+  useEffect(() => {
+    const finishedSending = wasSendingRef.current && !messageSending
+    wasSendingRef.current = messageSending
+    if (!finishedSending || disabled) {
+      return
+    }
+    const textarea = textareaRef.current
+    if (!textarea) {
+      return
+    }
+    if (messageBody === '') {
+      textarea.style.height = 'auto'
+    }
+    textarea.focus()
+  }, [messageSending, disabled, messageBody, textareaRef])
+
+  const hasFeedback = Boolean(
+    chatNotice || messageStatus || chatError || chatLoading,
+  )
+
   return (
     <form
       onSubmit={onSubmit}
-      className="border-t border-zinc-800 px-4 py-3"
+      className="shrink-0 border-t border-[var(--color-edge)] bg-[var(--color-raised)] px-4 py-4"
     >
-      {chatNotice && (
-        <div
-          id={noticeId}
-          className="mb-2 text-[var(--color-accent-red)]"
-          role="status"
-          aria-live="polite"
+      {/* Transient toasts (sent, cooldown, errors) sit on the right of the
+          identity row so they never overlap the chat list above. */}
+      <div className="mb-3 flex items-center gap-3 text-[0.8rem] text-[var(--color-muted)]">
+        <span className="shrink-0">
+          Logged in as{' '}
+          <span className="font-bold text-[var(--color-app-fg)]">
+            {authNickname}
+          </span>
+        </span>
+        <button
+          type="button"
+          className="shrink-0 rounded-md border border-[var(--color-edge)] px-1 py-0.5 text-[0.7rem] text-[var(--color-faint)] font-bold transition-colors hover:border-[var(--color-faint)] hover:text-[var(--color-app-fg)] focus-visible:outline-none focus-visible:border-[var(--color-faint)] focus-visible:text-[var(--color-app-fg)] cursor-pointer"
+          onClick={onSignOut}
         >
-          {chatNotice}
-        </div>
-      )}
-      <div className="flex items-end gap-2">
+          Log Out
+        </button>
+        {hasFeedback && (
+          <div className="ml-auto flex min-w-0 flex-col items-end gap-1 text-right">
+            {chatNotice && (
+              <div
+                id={noticeId}
+                className="rounded-md border border-[rgba(247,118,142,0.3)] bg-[rgba(20,12,14,0.92)] px-2 py-1 text-[0.7rem] leading-snug text-[var(--color-accent-red)]"
+                role="status"
+                aria-live="polite"
+              >
+                {chatNotice}
+              </div>
+            )}
+            {chatLoading && (
+              <div
+                id={loadingId}
+                className="rounded-md border border-[var(--color-edge)] bg-[rgba(16,17,19,0.92)] px-2 py-1 text-[0.7rem] leading-snug text-[var(--color-faint)]"
+                role="status"
+                aria-live="polite"
+              >
+                syncing chat history…
+              </div>
+            )}
+            {messageStatus && (
+              <div
+                id={messageStatusId}
+                className="rounded-md border border-[var(--color-edge)] bg-[rgba(16,17,19,0.92)] px-2 py-1 text-[0.7rem] leading-snug text-[var(--color-muted)]"
+                role="status"
+                aria-live="polite"
+              >
+                {messageStatus}
+              </div>
+            )}
+            {chatError && (
+              <div
+                id={errorId}
+                className="rounded-md border border-[rgba(247,118,142,0.3)] bg-[rgba(20,12,14,0.92)] px-2 py-1 text-[0.7rem] leading-snug text-[var(--color-accent-red)]"
+                role="alert"
+              >
+                {chatError}
+                {cooldownRemaining !== null && (
+                  <span className="ml-1">({cooldownRemaining}s)</span>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div className="flex items-end gap-2.5 rounded-xl border border-[var(--color-edge)] bg-[var(--color-raised2)] py-2 pl-3.5 pr-2 transition-colors focus-within:border-[rgba(31,214,166,0.5)]">
         <label htmlFor={messageId} className="sr-only">
           Chat message
         </label>
@@ -105,80 +178,20 @@ export function ChatComposer({
               event.currentTarget.form?.requestSubmit()
             }
           }}
-          placeholder="Type a message"
+          placeholder="Send a message…"
           disabled={composerDisabled}
           rows={1}
           aria-invalid={Boolean(chatError)}
           aria-describedby={describedBy}
-          className="max-h-64 min-h-9 flex-1 resize-none overflow-hidden border border-zinc-700 bg-zinc-900/40 px-3 py-2 leading-6 text-zinc-100 placeholder:text-zinc-600 transition focus:border-sky-400/70 focus:bg-zinc-900/70 focus:outline-none focus:ring-1 focus:ring-sky-400/30 disabled:opacity-60"
+          className="max-h-40 min-h-6 flex-1 resize-none overflow-hidden bg-transparent py-1 text-[0.9rem] leading-6 text-[var(--color-app-fg)] placeholder:text-[var(--color-faint)] focus:outline-none disabled:opacity-60"
         />
         <button
           type="submit"
           disabled={composerDisabled}
-          className="inline-flex min-h-9 items-center gap-2 border border-transparent bg-gradient-to-r from-[var(--color-accent)] to-[var(--color-accent-strong)] px-4 py-2 font-semibold leading-6 text-zinc-950 shadow-lg shadow-sky-500/20 transition hover:brightness-110 hover:shadow-sky-500/30 active:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/50 disabled:cursor-not-allowed disabled:opacity-50 disabled:shadow-none disabled:hover:brightness-100"
+          className="inline-flex h-9 shrink-0 items-center rounded-[9px] bg-[var(--color-accent)] px-5 text-[0.875rem] font-extrabold text-[var(--color-acc-ink)] transition hover:brightness-105 active:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(31,214,166,0.5)] disabled:cursor-not-allowed disabled:opacity-50"
         >
-          <FontAwesomeIcon
-            icon={faPaperPlane}
-            className="text-[13px]"
-            aria-hidden="true"
-          />
-          {messageSending ? 'sending…' : 'send'}
+          {messageSending ? 'Sending…' : 'Send'}
         </button>
-      </div>
-      {messageStatus && (
-        <div
-          id={messageStatusId}
-          className="mt-2 text-zinc-400"
-          role="status"
-          aria-live="polite"
-        >
-          {messageStatus}
-        </div>
-      )}
-      {chatError && (
-        <div
-          id={errorId}
-          className="mt-2 border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-rose-100"
-          role="alert"
-        >
-          {chatError}
-          {cooldownRemaining !== null && (
-            <span className="ml-1 text-[var(--color-accent-red)]">
-              ({cooldownRemaining}s)
-            </span>
-          )}
-        </div>
-      )}
-      {chatLoading && (
-        <div
-          id={loadingId}
-          className="mt-2 text-zinc-500"
-          role="status"
-          aria-live="polite"
-        >
-          syncing chat history…
-        </div>
-      )}
-      <div className="mt-2 flex items-center justify-between text-zinc-500">
-        <button
-          type="button"
-          className="text-zinc-400 transition-colors hover:text-zinc-200 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sky-400/40"
-          onClick={onSignOut}
-        >
-          sign out
-        </button>
-        {authIsAdmin ? (
-          <button
-            type="button"
-            className="inline-flex h-6 w-6 items-center justify-center text-zinc-400 transition hover:text-sky-400 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sky-400/40 cursor-pointer"
-            onClick={onOpenAdminMenu}
-            aria-label="Open admin menu"
-          >
-            <FontAwesomeIcon icon={faShield} className="text-[16px]" />
-          </button>
-        ) : (
-          <span aria-hidden="true" />
-        )}
       </div>
     </form>
   )

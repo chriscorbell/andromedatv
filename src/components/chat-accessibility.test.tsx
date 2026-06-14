@@ -33,15 +33,14 @@ describe('chat accessibility', () => {
     expect(screen.getAllByRole('status')).toHaveLength(3)
   })
 
-  it('wires composer labels, alerts, and admin affordances', () => {
+  it('wires composer labels, alerts, and sign-out', () => {
     const handleMessageBodyChange = vi.fn()
-    const handleOpenAdminMenu = vi.fn()
     const handleSignOut = vi.fn()
     const textareaRef = { current: null }
 
     render(
       <ChatComposer
-        authIsAdmin
+        authNickname="opal"
         chatError="slow down"
         chatLoading
         chatNotice="you have been warned"
@@ -51,7 +50,6 @@ describe('chat accessibility', () => {
         messageStatus="Sending message..."
         messageBody="hello"
         onMessageBodyChange={handleMessageBodyChange}
-        onOpenAdminMenu={handleOpenAdminMenu}
         onSignOut={handleSignOut}
         onSubmit={vi.fn()}
         textareaRef={textareaRef}
@@ -65,10 +63,7 @@ describe('chat accessibility', () => {
     expect(screen.getByText('Sending message...')).toBeInTheDocument()
     expect(screen.getAllByRole('status')).toHaveLength(3)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Open admin menu' }))
-    expect(handleOpenAdminMenu).toHaveBeenCalledTimes(1)
-
-    fireEvent.click(screen.getByRole('button', { name: 'sign out' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Log Out' }))
     expect(handleSignOut).toHaveBeenCalledTimes(1)
   })
 })

@@ -118,6 +118,9 @@ export function useChat() {
     setAuthNicknameInput('')
     setAuthPasswordInput('')
     setAuthError(null)
+    setChatError(null)
+    setCooldownUntil(null)
+    setCooldownRemaining(null)
     closeChatStream()
     if (notifyServer) {
       void api.chat.logout().catch((error) => {
@@ -455,6 +458,9 @@ export function useChat() {
       setCooldownRemaining(remaining)
       if (remaining === 0) {
         setCooldownUntil(null)
+        // The input is disabled for the whole cooldown, so the only error that
+        // can be showing is the rate-limit warning — dismiss it as time expires.
+        setChatError(null)
       }
     }
 
