@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type Hls from 'hls.js/light'
 import { useVideoPlayerControls } from './use-video-player-controls'
 
@@ -108,6 +108,35 @@ export function useVideoPlayer() {
     videoFrameRef,
     videoRef,
   })
+
+  // Wall-clock timestamp (epoch ms) of the frame currently on screen, derived
+  // from the stream's EXT-X-PROGRAM-DATE-TIME tags. This trails real time by the
+  // live-edge buffer (and any pre-roll bump), so the schedule uses it instead of
+  // Date.now() to stay aligned with what's actually playing. Null until known.
+  const getStreamDate = useCallback((): number | null => {
+    const hls = hlsRef.current
+    if (hls) {
+      const playingDate = hls.playingDate
+      if (playingDate) {
+        const ms = playingDate.getTime()
+        if (!Number.isNaN(ms)) {
+          return ms
+        }
+      }
+    }
+
+    const video = videoRef.current as
+      | (HTMLVideoElement & { getStartDate?: () => Date })
+      | null
+    if (video && typeof video.getStartDate === 'function') {
+      const startMs = video.getStartDate().getTime()
+      if (!Number.isNaN(startMs)) {
+        return startMs + video.currentTime * 1000
+      }
+    }
+
+    return null
+  }, [])
 
   useEffect(() => {
     const video = videoRef.current
@@ -641,6 +670,7 @@ export function useVideoPlayer() {
     handleRetryPlayback,
     handleToggleMute,
     handleVolumeChange,
+    getStreamDate,
     isMuted,
     playbackState,
     playbackStatusDetail,

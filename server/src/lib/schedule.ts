@@ -1,5 +1,9 @@
 import { XMLParser } from "fast-xml-parser";
 
+// How far back to keep already-ended programmes in the payload, so a client whose
+// stream playhead trails wall-clock time can still match the show on screen.
+const SCHEDULE_LOOKBACK_MS = 15 * 60_000;
+
 export type ScheduleItem = {
     title: string;
     episode?: string;
@@ -290,11 +294,22 @@ export function normalizeScheduleXml(xmlText: string, now = new Date()): Schedul
     const nextIndex = normalizedPrograms.findIndex(
         (item) => Boolean(item.stop ? now < item.stop : item.start && now < item.start)
     );
-    const startIndex = currentIndex >= 0 ? currentIndex : nextIndex >= 0 ? nextIndex : 0;
+    const baseIndex = currentIndex >= 0 ? currentIndex : nextIndex >= 0 ? nextIndex : 0;
+
+    // The HLS stream runs behind wall-clock time (live-edge buffering plus the
+    // pre-roll bump between episodes), so the programme on screen can still be one
+    // the EPG already considers finished. Include a short look-back window so the
+    // client can match the actual playhead to a recently-ended programme.
+    const lookbackThreshold = now.getTime() - SCHEDULE_LOOKBACK_MS;
+    const lookbackIndex = normalizedPrograms.findIndex(
+        (item) => Boolean(item.stop && item.stop.getTime() > lookbackThreshold)
+    );
+    const startIndex = lookbackIndex >= 0 ? Math.min(lookbackIndex, baseIndex) : baseIndex;
     const slicedPrograms = normalizedPrograms.slice(startIndex, startIndex + 25);
+    const currentProgram = currentIndex >= 0 ? normalizedPrograms[currentIndex] : slicedPrograms[0];
 
     const schedule = slicedPrograms.map((item, index): ScheduleItem => {
-        const live = index === 0 && currentIndex >= 0;
+        const live = currentIndex >= 0 && startIndex + index === currentIndex;
         return {
             ...(item.description ? { description: item.description } : {}),
             ...(item.episode ? { episode: item.episode } : {}),
@@ -309,7 +324,7 @@ export function normalizeScheduleXml(xmlText: string, now = new Date()): Schedul
 
     return {
         fetchedAt: now.toISOString(),
-        refreshAfterMs: computeScheduleRefreshDelay(now, slicedPrograms[0]),
+        refreshAfterMs: computeScheduleRefreshDelay(now, currentProgram),
         schedule,
     };
 }

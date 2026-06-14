@@ -1,11 +1,12 @@
+import { useEffect, useState } from 'react'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import { faChevronDown } from '@fortawesome/free-solid-svg-icons'
-import { ScheduleClock } from './schedule-clock'
 import { ServiceStatusBanner } from './service-status-banner'
 import type { ScheduleItem } from '../types/schedule'
 
 type SchedulePanelProps = {
   expandedScheduleKey: string | null
+  getStreamDate?: () => number | null
   onToggleItem: (itemKey: string) => void
   onRetrySchedule: () => void
   schedule: ScheduleItem[]
@@ -34,8 +35,30 @@ function formatScheduleTime(item: ScheduleItem) {
   return `${startLabel} - ${stopLabel}`
 }
 
+type ItemBounds = { start: number; stop: number }
+
+function getItemBounds(item: ScheduleItem): ItemBounds | null {
+  if (!item.startAt || !item.stopAt) {
+    return null
+  }
+
+  const start = new Date(item.startAt).getTime()
+  const stop = new Date(item.stopAt).getTime()
+  if (Number.isNaN(start) || Number.isNaN(stop) || stop <= start) {
+    return null
+  }
+
+  return { start, stop }
+}
+
+function liveProgress(bounds: ItemBounds, now: number) {
+  const progress = (now - bounds.start) / (bounds.stop - bounds.start)
+  return Math.min(1, Math.max(0, progress))
+}
+
 export function SchedulePanel({
   expandedScheduleKey,
+  getStreamDate,
   onToggleItem,
   onRetrySchedule,
   schedule,
@@ -43,12 +66,24 @@ export function SchedulePanel({
   scheduleStatusDetail,
   syncTitleTooltip,
 }: SchedulePanelProps) {
+  // "Now" for liveness/progress: prefer the stream's playhead time, falling back
+  // to wall-clock when the player hasn't reported a position yet (before HLS
+  // attaches, or no PDT). Held in state and re-sampled once a second so the live
+  // row and progress bar keep pace with the stream between schedule polls. The
+  // impure clock read happens in the effect, never during render.
+  const [effectiveNow, setEffectiveNow] = useState(() => Date.now())
+  useEffect(() => {
+    const sampleNow = () => setEffectiveNow(getStreamDate?.() ?? Date.now())
+    sampleNow()
+    const intervalId = window.setInterval(sampleNow, 1000)
+    return () => window.clearInterval(intervalId)
+  }, [getStreamDate])
+
   return (
-    <div className="flex min-h-0 flex-[1] flex-col">
-      <header className="flex h-12 items-center border-b border-zinc-800 px-4 text-xs text-zinc-300">
-        <span className="ui-header font-extrabold">schedule</span>
-        <ScheduleClock />
-      </header>
+    <div className="flex h-[30vh] shrink-0 min-h-0 flex-col border-b border-[var(--color-edge)]">
+      <div className="sec-head px-5 pt-4 pb-2.5">
+        <span>schedule</span>
+      </div>
       {scheduleState !== 'ready' && (
         <ServiceStatusBanner
           detail={scheduleStatusDetail}
@@ -65,9 +100,23 @@ export function SchedulePanel({
           }
         />
       )}
-      <div className="scrollbar-minimal min-h-0 flex-1 overflow-y-auto">
-        <ul className="divide-y divide-zinc-800">
+      <div className="scrollbar-minimal min-h-0 flex-1 overflow-y-auto px-3 pb-3">
+        <ul className="flex flex-col gap-0.5">
           {schedule.map((item) => {
+            const bounds = getItemBounds(item)
+
+            // Drop shows the playhead has already passed so the live row sits at
+            // the top of the list instead of trailing finished episodes.
+            if (bounds && effectiveNow >= bounds.stop) {
+              return null
+            }
+
+            // A row is live only once the playhead actually reaches it. Items
+            // without timestamps fall back to the server's live hint.
+            const isLive = bounds
+              ? effectiveNow >= bounds.start && effectiveNow < bounds.stop
+              : Boolean(item.live)
+
             const itemTime = formatScheduleTime(item)
             const itemKey = `${item.title}-${item.startAt ?? item.time ?? 'schedule-item'}`
             const isExpanded = expandedScheduleKey === itemKey
@@ -75,63 +124,69 @@ export function SchedulePanel({
             const hasDetails = Boolean(
               item.episode || releaseInfo || item.description,
             )
+            const progress = isLive && bounds ? liveProgress(bounds, effectiveNow) : null
 
             return (
               <li
                 key={itemKey}
-                className={`text-zinc-300 ${item.live ? 'schedule-row-live' : ''}`}
+                className={`schedule-item ${isLive ? 'schedule-row-live' : ''}`}
               >
                 <button
                   type="button"
-                  className="schedule-row flex w-full items-center gap-3 px-4 py-3 text-left text-zinc-100 transition-colors"
+                  className="schedule-row flex w-full items-center gap-2.5 px-2 py-2.5 text-left transition-colors"
                   onClick={() => onToggleItem(itemKey)}
                   aria-expanded={isExpanded}
                   data-expanded={isExpanded}
                   data-clickable={hasDetails}
                   disabled={!hasDetails}
                 >
-                  <span
-                    className="schedule-title min-w-0 flex-1 truncate text-zinc-400"
-                    data-full-title={item.title}
-                    onMouseEnter={(event) =>
-                      syncTitleTooltip(event.currentTarget)
-                    }
-                  >
-                    {item.title}
+                  {hasDetails && (
+                    <FontAwesomeIcon
+                      icon={faChevronDown}
+                      className="schedule-chevron shrink-0 text-[12px]"
+                    />
+                  )}
+                  <span className="schedule-title flex min-w-0 flex-1 items-center gap-2">
+                    {isLive && <span className="now-dot" />}
+                    <span
+                      className="min-w-0 truncate"
+                      data-full-title={item.title}
+                      onMouseEnter={(event) =>
+                        syncTitleTooltip(event.currentTarget)
+                      }
+                    >
+                      {item.title}
+                    </span>
                   </span>
-                  <span className="flex shrink-0 items-center gap-2 whitespace-nowrap">
-                    {item.live ? (
-                      <span className="flex items-center gap-2 whitespace-nowrap font-extrabold tracking-wider text-[var(--color-accent)]">
-                        <span className="inline-flex h-1.5 w-1.5 rounded-full bg-[var(--color-accent)]" />
-                        LIVE
-                      </span>
-                    ) : (
-                      <span className="schedule-time font-data whitespace-nowrap text-zinc-500">
-                        {itemTime}
-                      </span>
-                    )}
-                    {hasDetails && (
-                      <FontAwesomeIcon
-                        icon={faChevronDown}
-                        className="schedule-chevron text-[16px]"
-                      />
-                    )}
-                  </span>
+                  {isLive ? (
+                    <span className="live-label shrink-0 whitespace-nowrap">
+                      LIVE
+                    </span>
+                  ) : (
+                    <span className="schedule-time font-data shrink-0 whitespace-nowrap">
+                      {itemTime}
+                    </span>
+                  )}
                 </button>
+                {isLive && progress !== null && (
+                  <div className="schedule-progress">
+                    <div style={{ width: `${progress * 100}%` }} />
+                  </div>
+                )}
                 {hasDetails && (
                   <div
                     className="schedule-details"
                     data-expanded={isExpanded}
                   >
                     {(item.episode || releaseInfo) && (
-                      <div className="text-xs text-zinc-500">
+                      <div className="schedule-meta">
                         {item.episode
                           ? `${item.episode}${releaseInfo ? ` – ${releaseInfo}` : ''}`
                           : `Movie – ${releaseInfo}`}
                       </div>
                     )}
                     {item.description && (
-                      <p className="prose-body text-zinc-400">
+                      <p className="prose-body text-[var(--color-muted)]">
                         {item.description}
                       </p>
                     )}

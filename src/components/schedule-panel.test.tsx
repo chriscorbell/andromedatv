@@ -2,12 +2,6 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { SchedulePanel } from './schedule-panel'
 
-vi.mock('./schedule-clock', () => ({
-  ScheduleClock: function ScheduleClockMock() {
-    return <span data-testid="schedule-clock">12:00:00 PM</span>
-  },
-}))
-
 describe('SchedulePanel', () => {
   it('renders details for an expanded item and toggles clickable rows', () => {
     const handleToggle = vi.fn()
@@ -37,7 +31,6 @@ describe('SchedulePanel', () => {
       />,
     )
 
-    expect(screen.getByTestId('schedule-clock')).toBeInTheDocument()
     expect(screen.getByText('Angel Cop')).toBeInTheDocument()
     expect(screen.getByText('S01E02 The Beginning')).toBeInTheDocument()
     expect(screen.getByText('Pilot & more')).toBeInTheDocument()
@@ -89,6 +82,7 @@ describe('SchedulePanel', () => {
     render(
       <SchedulePanel
         expandedScheduleKey={null}
+        getStreamDate={() => new Date('2026-03-15T15:00:00.000Z').getTime()}
         onToggleItem={vi.fn()}
         onRetrySchedule={vi.fn()}
         schedule={[
@@ -105,6 +99,51 @@ describe('SchedulePanel', () => {
     )
 
     expect(screen.getByText(expectedLabel)).toBeInTheDocument()
+  })
+
+  it('drives liveness and progress from the stream playhead, hiding passed shows', () => {
+    const finished = {
+      title: 'Just Finished',
+      startAt: '2026-03-15T15:00:00.000Z',
+      stopAt: '2026-03-15T15:30:00.000Z',
+    }
+    const onScreen = {
+      title: 'On Screen Now',
+      startAt: '2026-03-15T15:30:00.000Z',
+      stopAt: '2026-03-15T16:00:00.000Z',
+    }
+    const upNext = {
+      title: 'Up Next',
+      startAt: '2026-03-15T16:00:00.000Z',
+      stopAt: '2026-03-15T16:30:00.000Z',
+    }
+
+    // Playhead sits a quarter into "On Screen Now" — well behind the EPG slots
+    // for the later shows.
+    render(
+      <SchedulePanel
+        expandedScheduleKey={null}
+        getStreamDate={() => new Date('2026-03-15T15:37:30.000Z').getTime()}
+        onToggleItem={vi.fn()}
+        onRetrySchedule={vi.fn()}
+        schedule={[finished, onScreen, upNext]}
+        scheduleState="ready"
+        scheduleStatusDetail="Schedule is up to date."
+        syncTitleTooltip={vi.fn()}
+      />,
+    )
+
+    // The show the playhead has already passed is dropped from the list.
+    expect(screen.queryByText('Just Finished')).not.toBeInTheDocument()
+
+    // The show actually on screen is the one marked LIVE...
+    expect(screen.getByText('On Screen Now')).toBeInTheDocument()
+    expect(screen.getByText('LIVE')).toBeInTheDocument()
+
+    // ...and the later show is still upcoming (not live), so it shows its time
+    // rather than a LIVE badge.
+    expect(screen.getByText('Up Next')).toBeInTheDocument()
+    expect(screen.getAllByText('LIVE')).toHaveLength(1)
   })
 
   it('shows degraded schedule status and supports manual retry', () => {
