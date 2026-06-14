@@ -3,7 +3,7 @@ import path from "path";
 import { createApp } from "./app";
 import { ensureInitialAdmin, loadOrCreateJwtSecret } from "./bootstrap";
 import { initDb } from "./db";
-import { createJellyfinSeriesYearProvider } from "./lib/jellyfin";
+import { createJellyfinYearProvider } from "./lib/jellyfin";
 
 const PORT = Number(process.env.PORT || 3001);
 const CORS_ORIGIN = process.env.CORS_ORIGIN || "*";
@@ -93,9 +93,9 @@ async function main() {
     const publicAppOrigin = normalizePublicAppOrigin(PUBLIC_APP_ORIGIN);
     const statusApiMode = parseStatusApiMode(STATUS_API_MODE);
     const trustProxy = parseTrustProxy(TRUST_PROXY);
-    const seriesYearProvider =
+    const yearProvider =
         JELLYFIN_BASE_URL && JELLYFIN_API_KEY
-            ? createJellyfinSeriesYearProvider({
+            ? createJellyfinYearProvider({
                   baseUrl: new URL(JELLYFIN_BASE_URL),
                   apiKey: JELLYFIN_API_KEY,
               })
@@ -107,7 +107,7 @@ async function main() {
         ersatzBaseUrl: new URL(ERSATZTV_BASE_URL),
         jwtSecret,
         publicAppOrigin,
-        seriesYearProvider,
+        yearProvider,
         statusApiMode,
         staticDir: STATIC_DIR,
         trustProxy,

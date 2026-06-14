@@ -71,8 +71,9 @@ export function SchedulePanel({
             const itemTime = formatScheduleTime(item)
             const itemKey = `${item.title}-${item.startAt ?? item.time ?? 'schedule-item'}`
             const isExpanded = expandedScheduleKey === itemKey
+            const releaseInfo = item.airDate ?? item.year
             const hasDetails = Boolean(
-              item.episode || item.year || item.description,
+              item.episode || releaseInfo || item.description,
             )
 
             return (
@@ -122,11 +123,11 @@ export function SchedulePanel({
                     className="schedule-details"
                     data-expanded={isExpanded}
                   >
-                    {(item.episode || item.year) && (
+                    {(item.episode || releaseInfo) && (
                       <div className="text-xs text-zinc-500">
                         {item.episode
-                          ? `${item.episode}${item.year ? ` – ${item.year}` : ''}`
-                          : `Movie – ${item.year}`}
+                          ? `${item.episode}${releaseInfo ? ` – ${releaseInfo}` : ''}`
+                          : `Movie – ${releaseInfo}`}
                       </div>
                     )}
                     {item.description && (

@@ -4,6 +4,7 @@ export type ScheduleItem = {
     title: string;
     episode?: string;
     year?: string;
+    airDate?: string; // full episode air date (MM/DD/YYYY), from Jellyfin
     time?: string;
     startAt?: string;
     stopAt?: string;
