@@ -228,7 +228,7 @@ button:disabled {
 .volume-slider {
   appearance: none;
   -webkit-appearance: none;
-  background-color: rgba(255, 255, 255, 0.18);
+  background-color: var(--color-subtle);
   border-radius: 999px;
   height: 4px;
 }
