@@ -3,6 +3,7 @@ import { XMLParser } from "fast-xml-parser";
 export type ScheduleItem = {
     title: string;
     episode?: string;
+    year?: string;
     time?: string;
     startAt?: string;
     stopAt?: string;
@@ -19,6 +20,7 @@ export type SchedulePayload = {
 type NormalizedProgram = {
     description?: string;
     episode?: string;
+    year?: string;
     start?: Date;
     stop?: Date;
     title: string;
@@ -42,6 +44,7 @@ type ParsedProgramme = {
     stop?: string;
     title?: ParsedTextNode;
     desc?: ParsedTextNode;
+    date?: ParsedTextNode;
     "sub-title"?: ParsedTextNode;
     "episode-num"?: ParsedEpisodeNode | ParsedEpisodeNode[];
 };
@@ -173,6 +176,16 @@ export function getEpisodePrefix(node: ParsedEpisodeNode | ParsedEpisodeNode[] |
     return undefined;
 }
 
+export function getProgrammeYear(node: ParsedTextNode | undefined): string | undefined {
+    const text = getNodeText(node);
+    if (!text) {
+        return undefined;
+    }
+
+    const match = text.match(/\d{4}/);
+    return match ? match[0] : undefined;
+}
+
 export function parseXmltvDate(value?: string): Date | null {
     if (!value) {
         return null;
@@ -236,15 +249,17 @@ function normalizeProgramme(programme: ParsedProgramme): NormalizedProgram | nul
     const episodeTitle = getNodeText(programme["sub-title"]);
     const episodePrefix = getEpisodePrefix(programme["episode-num"]);
     const episode = episodeTitle
-        ? `${episodePrefix ? `${episodePrefix} ` : ""}${episodeTitle}`
+        ? `${episodePrefix ? `${episodePrefix} – ` : ""}${episodeTitle}`
         : episodePrefix;
     const description = getNodeText(programme.desc);
+    const year = getProgrammeYear(programme.date);
     const start = parseXmltvDate(programme.start);
     const stop = parseXmltvDate(programme.stop);
 
     return {
         description,
         episode,
+        year,
         start: start || undefined,
         stop: stop || undefined,
         title,
@@ -282,6 +297,7 @@ export function normalizeScheduleXml(xmlText: string, now = new Date()): Schedul
         return {
             ...(item.description ? { description: item.description } : {}),
             ...(item.episode ? { episode: item.episode } : {}),
+            ...(item.year ? { year: item.year } : {}),
             live,
             ...(item.start ? { startAt: item.start.toISOString() } : {}),
             ...(item.stop ? { stopAt: item.stop.toISOString() } : {}),

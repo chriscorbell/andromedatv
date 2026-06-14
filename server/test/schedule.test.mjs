@@ -45,7 +45,7 @@ test("normalizeScheduleXml keeps the Andromeda channel and strips episode HTML",
     assert.equal(payload.schedule.length, 2);
     assert.deepEqual(payload.schedule[0], {
         title: "Angel Cop",
-        episode: "S01E02 The Beginning",
+        episode: "S01E02 – The Beginning",
         description: "Pilot & more\nLine 2",
         live: true,
         startAt: "2026-03-14T10:00:00.000Z",
@@ -80,6 +80,38 @@ test("normalizeScheduleXml handles single channel/programme nodes without array 
         stopAt: "2026-03-14T12:30:00.000Z",
         live: false,
     });
+});
+
+test("normalizeScheduleXml surfaces the release year for movies without an episode", () => {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<tv>
+  <channel id="andromeda-main">
+    <display-name>1 Andromeda</display-name>
+  </channel>
+  <programme start="20260314100000 +0000" stop="20260314120000 +0000" channel="andromeda-main">
+    <title>Akira</title>
+    <date>19880716</date>
+    <desc>Neo-Tokyo is about to explode.</desc>
+  </programme>
+  <programme start="20260314120000 +0000" stop="20260314123000 +0000" channel="andromeda-main">
+    <title>Cowboy Bebop</title>
+    <sub-title>Asteroid Blues</sub-title>
+    <episode-num system="xmltv_ns">0.0.</episode-num>
+    <date>19980403</date>
+    <desc>A bounty in the badlands.</desc>
+  </programme>
+</tv>`;
+
+    const payload = schedule.normalizeScheduleXml(xml, new Date("2026-03-14T10:05:00.000Z"));
+
+    // Movie: year shown, no episode line.
+    assert.equal(payload.schedule[0]?.title, "Akira");
+    assert.equal(payload.schedule[0]?.year, "1988");
+    assert.equal(payload.schedule[0]?.episode, undefined);
+
+    // Episode: keeps the S/E line and also surfaces the year.
+    assert.equal(payload.schedule[1]?.episode, "S01E01 – Asteroid Blues");
+    assert.equal(payload.schedule[1]?.year, "1998");
 });
 
 test("normalizeScheduleXml starts from the next upcoming programme when nothing is live", () => {

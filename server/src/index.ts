@@ -3,10 +3,13 @@ import path from "path";
 import { createApp } from "./app";
 import { ensureInitialAdmin, loadOrCreateJwtSecret } from "./bootstrap";
 import { initDb } from "./db";
+import { createJellyfinSeriesYearProvider } from "./lib/jellyfin";
 
 const PORT = Number(process.env.PORT || 3001);
 const CORS_ORIGIN = process.env.CORS_ORIGIN || "*";
 const ERSATZTV_BASE_URL = process.env.ERSATZTV_BASE_URL || "";
+const JELLYFIN_BASE_URL = process.env.JELLYFIN_BASE_URL || "";
+const JELLYFIN_API_KEY = process.env.JELLYFIN_API_KEY || "";
 const PUBLIC_APP_ORIGIN = process.env.PUBLIC_APP_ORIGIN || "";
 const STATUS_API_MODE = process.env.STATUS_API_MODE || "admin";
 const TRUST_PROXY = process.env.TRUST_PROXY || "";
@@ -69,6 +72,12 @@ async function main() {
         );
     }
 
+    if (Boolean(JELLYFIN_BASE_URL) !== Boolean(JELLYFIN_API_KEY)) {
+        throw new Error(
+            "JELLYFIN_BASE_URL and JELLYFIN_API_KEY must be set together"
+        );
+    }
+
     await fs.mkdir(path.dirname(DB_PATH), { recursive: true });
 
     const jwtSecret = await loadOrCreateJwtSecret(
@@ -84,6 +93,13 @@ async function main() {
     const publicAppOrigin = normalizePublicAppOrigin(PUBLIC_APP_ORIGIN);
     const statusApiMode = parseStatusApiMode(STATUS_API_MODE);
     const trustProxy = parseTrustProxy(TRUST_PROXY);
+    const seriesYearProvider =
+        JELLYFIN_BASE_URL && JELLYFIN_API_KEY
+            ? createJellyfinSeriesYearProvider({
+                  baseUrl: new URL(JELLYFIN_BASE_URL),
+                  apiKey: JELLYFIN_API_KEY,
+              })
+            : undefined;
 
     const app = createApp({
         corsOrigin: CORS_ORIGIN,
@@ -91,6 +107,7 @@ async function main() {
         ersatzBaseUrl: new URL(ERSATZTV_BASE_URL),
         jwtSecret,
         publicAppOrigin,
+        seriesYearProvider,
         statusApiMode,
         staticDir: STATIC_DIR,
         trustProxy,

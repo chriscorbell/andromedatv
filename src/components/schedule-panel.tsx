@@ -1,3 +1,5 @@
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
+import { faChevronDown } from '@fortawesome/free-solid-svg-icons'
 import { ScheduleClock } from './schedule-clock'
 import { ServiceStatusBanner } from './service-status-banner'
 import type { ScheduleItem } from '../types/schedule'
@@ -69,16 +71,18 @@ export function SchedulePanel({
             const itemTime = formatScheduleTime(item)
             const itemKey = `${item.title}-${item.startAt ?? item.time ?? 'schedule-item'}`
             const isExpanded = expandedScheduleKey === itemKey
-            const hasDetails = Boolean(item.episode || item.description)
+            const hasDetails = Boolean(
+              item.episode || item.year || item.description,
+            )
 
             return (
               <li
                 key={itemKey}
-                className="text-zinc-300"
+                className={`text-zinc-300 ${item.live ? 'schedule-row-live' : ''}`}
               >
                 <button
                   type="button"
-                  className={`schedule-row flex w-full items-center gap-3 rounded-md px-4 py-3 text-left text-zinc-100 transition ${hasDetails ? 'hover:bg-zinc-900/60 hover:text-white' : ''}`}
+                  className="schedule-row flex w-full items-center gap-3 px-4 py-3 text-left text-zinc-100 transition-colors"
                   onClick={() => onToggleItem(itemKey)}
                   aria-expanded={isExpanded}
                   data-expanded={isExpanded}
@@ -86,7 +90,7 @@ export function SchedulePanel({
                   disabled={!hasDetails}
                 >
                   <span
-                    className="min-w-0 flex-1 truncate text-zinc-400"
+                    className="schedule-title min-w-0 flex-1 truncate text-zinc-400"
                     data-full-title={item.title}
                     onMouseEnter={(event) =>
                       syncTitleTooltip(event.currentTarget)
@@ -96,28 +100,20 @@ export function SchedulePanel({
                   </span>
                   <span className="flex shrink-0 items-center gap-2 whitespace-nowrap">
                     {item.live ? (
-                      <span className="flex items-center gap-2 whitespace-nowrap text-zinc-200">
-                        <span className="inline-flex h-1.5 w-1.5 rounded-full bg-[var(--color-accent-red)]" />
+                      <span className="flex items-center gap-2 whitespace-nowrap font-extrabold tracking-wider text-[#00ddff]">
+                        <span className="inline-flex h-1.5 w-1.5 rounded-full bg-[#00ddff]" />
                         LIVE
                       </span>
                     ) : (
-                      <span className="whitespace-nowrap text-zinc-500">
+                      <span className="schedule-time font-data whitespace-nowrap text-zinc-500">
                         {itemTime}
                       </span>
                     )}
                     {hasDetails && (
-                      <svg
-                        viewBox="0 0 24 24"
-                        className="schedule-chevron h-4 w-4"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.5"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        aria-hidden="true"
-                      >
-                        <path d="M6 9l6 6 6-6" />
-                      </svg>
+                      <FontAwesomeIcon
+                        icon={faChevronDown}
+                        className="schedule-chevron text-[16px]"
+                      />
                     )}
                   </span>
                 </button>
@@ -126,13 +122,15 @@ export function SchedulePanel({
                     className="schedule-details"
                     data-expanded={isExpanded}
                   >
-                    {item.episode && (
+                    {(item.episode || item.year) && (
                       <div className="text-xs text-zinc-500">
-                        {item.episode}
+                        {item.episode
+                          ? `${item.episode}${item.year ? ` – ${item.year}` : ''}`
+                          : `Movie – ${item.year}`}
                       </div>
                     )}
                     {item.description && (
-                      <p className="text-xs text-zinc-400">
+                      <p className="prose-body text-zinc-400">
                         {item.description}
                       </p>
                     )}

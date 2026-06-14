@@ -5,7 +5,7 @@ import type { ScheduleItem } from '../types/schedule'
 const fallbackSchedule: ScheduleItem[] = [
   {
     title: 'Angel Cop',
-    episode: 'S01E03 The Death Warrant',
+    episode: 'S01E03 – The Death Warrant',
     time: 'LIVE',
     description: 'A captured criminal reveals the depths of the Red May conspiracy.',
     live: true,

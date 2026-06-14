@@ -16,6 +16,7 @@ import {
     validateNickname,
 } from "./lib/auth";
 import { normalizeScheduleXml, SchedulePayload } from "./lib/schedule";
+import type { JellyfinSeriesYearProvider } from "./lib/jellyfin";
 
 const STREAM_AUTH_COOKIE_NAME = "andromeda_stream";
 const STREAM_AUTH_COOKIE_PATH = "/api";
@@ -87,6 +88,7 @@ export type CreateAppOptions = {
     trustProxy?: boolean | number | string;
     logger?: Pick<Console, "info" | "warn" | "error">;
     loadSchedulePayload?: ScheduleLoader;
+    seriesYearProvider?: JellyfinSeriesYearProvider;
 };
 
 type LogLevel = "info" | "warn" | "error";
@@ -527,12 +529,20 @@ export function createApp(options: CreateAppOptions) {
             const xmlText = await response.text();
             const payload = normalizeScheduleXml(xmlText, new Date());
 
+            const schedule = options.seriesYearProvider
+                ? await options.seriesYearProvider.enrichScheduleWithYears(
+                      payload.schedule,
+                  )
+                : payload.schedule;
+            const enrichedPayload: SchedulePayload = { ...payload, schedule };
+
             scheduleCache = {
-                expiresAt: Date.now() + Math.min(payload.refreshAfterMs, 30_000),
-                payload,
+                expiresAt:
+                    Date.now() + Math.min(enrichedPayload.refreshAfterMs, 30_000),
+                payload: enrichedPayload,
             };
 
-            return payload;
+            return enrichedPayload;
         })();
 
         try {
