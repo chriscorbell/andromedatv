@@ -1,35 +1,62 @@
 import { useId, useRef } from 'react'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
-import { faArrowLeft, faXmark } from '@fortawesome/free-solid-svg-icons'
+import {
+  faArrowRotateLeft,
+  faBan,
+  faMagnifyingGlass,
+  faShieldHalved,
+  faTrashCan,
+  faTriangleExclamation,
+  faXmark,
+} from '@fortawesome/free-solid-svg-icons'
 import { useDialogFocus } from '../hooks/use-dialog-focus'
-import type { AdminAction, AdminMenuView, AdminUser } from '../types/admin'
+import type {
+  AdminAction,
+  AdminMenuView,
+  AdminUserLists,
+  AdminUserLoading,
+} from '../types/admin'
 
 type AdminMenuModalProps = {
   active: boolean
-  onBack: () => void
   onClose: () => void
   onOpenClearChatConfirm: () => void
-  onOpenUserView: (view: 'active' | 'banned') => void
+  onOpenUserView: (view: AdminMenuView) => void
   onSearchChange: (value: string) => void
   onUserAction: (action: AdminAction) => void
   search: string
-  userList: AdminUser[]
-  userLoading: boolean
+  userLists: AdminUserLists
+  userLoading: AdminUserLoading
   view: AdminMenuView
   viewAnimating: boolean
   visible: boolean
 }
 
+const dateFormatter = new Intl.DateTimeFormat('en-US', {
+  day: 'numeric',
+  month: 'short',
+  year: 'numeric',
+})
+
+const getJoinedLabel = (createdAt: string) => {
+  const date = new Date(createdAt)
+
+  if (Number.isNaN(date.getTime())) {
+    return 'Join date unavailable'
+  }
+
+  return `Joined ${dateFormatter.format(date)}`
+}
+
 export function AdminMenuModal({
   active,
-  onBack,
   onClose,
   onOpenClearChatConfirm,
   onOpenUserView,
   onSearchChange,
   onUserAction,
   search,
-  userList,
+  userLists,
   userLoading,
   view,
   viewAnimating,
@@ -37,25 +64,26 @@ export function AdminMenuModal({
 }: AdminMenuModalProps) {
   const titleId = useId()
   const descriptionId = useId()
-  const closeButtonRef = useRef<HTMLButtonElement | null>(null)
+  const tabListId = useId()
   const searchInputRef = useRef<HTMLInputElement | null>(null)
-  const dialogRef = useDialogFocus<HTMLDivElement>(
-    active,
-    view === 'main' ? closeButtonRef : searchInputRef,
-  )
+  const dialogRef = useDialogFocus<HTMLDivElement>(active, searchInputRef)
 
   if (!visible) {
     return null
   }
 
-  const searchLower = search.toLowerCase()
-  const filteredUsers = userList.filter((user) =>
-    user.nickname.toLowerCase().includes(searchLower),
+  const users = userLists[view]
+  const normalizedSearch = search.trim().toLowerCase()
+  const filteredUsers = users.filter((user) =>
+    user.nickname.toLowerCase().includes(normalizedSearch),
   )
+  const activeTabId = `${tabListId}-${view}`
+  const panelId = `${tabListId}-panel`
 
   return (
     <div
-      className={`fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4 transition-opacity duration-200 ${active ? 'opacity-100' : 'pointer-events-none opacity-0'}`}
+      className="admin-overlay"
+      data-active={active}
       onClick={onClose}
     >
       <div
@@ -65,174 +93,180 @@ export function AdminMenuModal({
         aria-labelledby={titleId}
         aria-describedby={descriptionId}
         tabIndex={-1}
-        className={`w-full max-w-md border border-zinc-800 bg-[#050505] text-zinc-200 shadow-xl transition duration-200 ${active ? 'translate-y-0 scale-100 opacity-100' : 'translate-y-2 scale-95 opacity-0'}`}
+        className="admin-dialog"
+        data-active={active}
         onClick={(event) => event.stopPropagation()}
       >
-        <div className={`transition-opacity duration-120 ${viewAnimating ? 'opacity-0' : 'opacity-100'}`}>
-          {view === 'main' && (
-            <div className="p-6">
-              <div className="flex items-start justify-between gap-4">
-                <div id={titleId} className="ui-header font-extrabold">admin</div>
-                <button
-                  ref={closeButtonRef}
-                  type="button"
-                  className="inline-flex h-6 w-6 items-center justify-center text-zinc-500 transition hover:text-zinc-200 cursor-pointer"
-                  onClick={onClose}
-                  aria-label="Close admin menu"
-                >
-                  <FontAwesomeIcon icon={faXmark} className="text-[16px]" />
-                </button>
-              </div>
-              <p id={descriptionId} className="mt-3 text-sm text-zinc-500">
-                manage chat moderation tools and user actions.
-              </p>
-              <div className="mt-4 flex flex-col gap-2">
-                <button
-                  type="button"
-                  className="w-full border border-zinc-800 px-3 py-2 text-left text-zinc-400 transition hover:border-zinc-600 hover:text-zinc-100 cursor-pointer"
-                  onClick={onOpenClearChatConfirm}
-                >
-                  wipe chat
-                </button>
-                <button
-                  type="button"
-                  className="w-full border border-zinc-800 px-3 py-2 text-left text-zinc-400 transition hover:border-zinc-600 hover:text-zinc-100 cursor-pointer"
-                  onClick={() => onOpenUserView('active')}
-                >
-                  active users
-                </button>
-                <button
-                  type="button"
-                  className="w-full border border-zinc-800 px-3 py-2 text-left text-zinc-400 transition hover:border-zinc-600 hover:text-zinc-100 cursor-pointer"
-                  onClick={() => onOpenUserView('banned')}
-                >
-                  banned users
-                </button>
-              </div>
-            </div>
-          )}
+        <header className="admin-header">
+          <div className="admin-heading-mark" aria-hidden="true">
+            <FontAwesomeIcon icon={faShieldHalved} />
+          </div>
+          <div className="admin-heading-copy">
+            <h2 id={titleId}>Admin</h2>
+            <p id={descriptionId}>Moderation tools</p>
+          </div>
+          <button
+            type="button"
+            className="admin-icon-button admin-close-button"
+            onClick={onClose}
+            aria-label="Close admin controls"
+          >
+            <FontAwesomeIcon icon={faXmark} />
+          </button>
+        </header>
 
-          {(view === 'active' || view === 'banned') && (
-            <div className="flex flex-col">
-              <div className="flex items-center gap-3 border-b border-zinc-800 px-6 py-4">
-                <button
-                  type="button"
-                  className="inline-flex h-6 w-6 items-center justify-center text-zinc-500 transition hover:text-zinc-200 cursor-pointer"
-                  onClick={onBack}
-                  aria-label="Back"
-                >
-                  <FontAwesomeIcon icon={faArrowLeft} className="text-[16px]" />
-                </button>
-                <div id={titleId} className="ui-header font-extrabold">
-                  {view === 'active' ? 'active users' : 'banned users'}
-                </div>
-                <button
-                  ref={closeButtonRef}
-                  type="button"
-                  className="ml-auto inline-flex h-6 w-6 items-center justify-center text-zinc-500 transition hover:text-zinc-200 cursor-pointer"
-                  onClick={onClose}
-                  aria-label="Close admin menu"
-                >
-                  <FontAwesomeIcon icon={faXmark} className="text-[16px]" />
-                </button>
-              </div>
-              <p id={descriptionId} className="px-6 pt-3 text-sm text-zinc-500">
-                review users and choose moderation actions.
-              </p>
-              <div className="px-6 pt-4">
-                <label htmlFor="admin-user-search" className="sr-only">
-                  Search users
-                </label>
-                <input
-                  id="admin-user-search"
-                  ref={searchInputRef}
-                  value={search}
-                  onChange={(event) => onSearchChange(event.target.value)}
-                  placeholder="search users"
-                  className="h-9 w-full border border-zinc-700 bg-black/40 px-3 text-zinc-100 placeholder:text-zinc-600 focus:border-zinc-500 focus:outline-none"
-                />
-              </div>
-              <div className="scrollbar-minimal max-h-64 min-h-[120px] overflow-y-auto px-6 py-3">
-                {userLoading ? (
-                  <div className="py-4 text-zinc-500">loading...</div>
-                ) : filteredUsers.length === 0 ? (
-                  <div className="py-4 text-zinc-500">
-                    {search ? 'no matching users' : 'no users'}
+        <div className="admin-content">
+          <div
+            className="admin-tabs"
+            role="tablist"
+            aria-label="User status"
+          >
+            {(['active', 'banned'] as const).map((tab) => (
+              <button
+                key={tab}
+                id={`${tabListId}-${tab}`}
+                type="button"
+                role="tab"
+                aria-controls={panelId}
+                aria-selected={view === tab}
+                className="admin-tab"
+                data-selected={view === tab}
+                onClick={() => onOpenUserView(tab)}
+              >
+                <span>{tab === 'active' ? 'Active' : 'Banned'}</span>
+                <span className="admin-tab-count">
+                  {userLoading[tab] && userLists[tab].length === 0
+                    ? '...'
+                    : userLists[tab].length}
+                </span>
+              </button>
+            ))}
+          </div>
+
+          <label className="admin-search" htmlFor="admin-user-search">
+            <FontAwesomeIcon icon={faMagnifyingGlass} aria-hidden="true" />
+            <span className="sr-only">Search {view} users</span>
+            <input
+              id="admin-user-search"
+              ref={searchInputRef}
+              type="search"
+              value={search}
+              onChange={(event) => onSearchChange(event.target.value)}
+              placeholder={`Search ${view} users`}
+              autoComplete="off"
+            />
+          </label>
+
+          <div
+            id={panelId}
+            role="tabpanel"
+            aria-labelledby={activeTabId}
+            aria-busy={userLoading[view]}
+            className="admin-user-list scrollbar-minimal"
+            data-transitioning={viewAnimating}
+          >
+            {userLoading[view] ? (
+              <div className="admin-loading" aria-label="Loading users">
+                {[0, 1, 2].map((item) => (
+                  <div key={item} className="admin-user-skeleton">
+                    <span />
+                    <span />
                   </div>
-                ) : (
-                  <ul className="flex flex-col gap-1">
-                    {filteredUsers.map((user) => (
-                      <li
-                        key={user.nickname}
-                        className="flex items-center justify-between gap-3 border-b border-zinc-800/50 py-2 last:border-0 animate-[fadeIn_120ms_ease-out] motion-reduce:animate-none"
-                      >
-                        <span className="truncate text-zinc-200">
-                          {user.nickname}
-                        </span>
-                        <span className="flex shrink-0 items-center gap-2">
-                          {view === 'active' ? (
-                            <>
-                              <button
-                                type="button"
-                                className="text-zinc-500 transition hover:text-[#f7768e] cursor-pointer"
-                                onClick={() =>
-                                  onUserAction({
-                                    kind: 'ban',
-                                    nickname: user.nickname,
-                                  })
-                                }
-                              >
-                                ban
-                              </button>
-                              <button
-                                type="button"
-                                className="text-zinc-500 transition hover:text-[#f7768e] cursor-pointer"
-                                onClick={() =>
-                                  onUserAction({
-                                    kind: 'delete-user',
-                                    nickname: user.nickname,
-                                  })
-                                }
-                              >
-                                delete
-                              </button>
-                            </>
-                          ) : (
-                            <>
-                              <button
-                                type="button"
-                                className="text-zinc-500 transition hover:text-[#73daca] cursor-pointer"
-                                onClick={() =>
-                                  onUserAction({
-                                    kind: 'unban',
-                                    nickname: user.nickname,
-                                  })
-                                }
-                              >
-                                unban
-                              </button>
-                              <button
-                                type="button"
-                                className="text-zinc-500 transition hover:text-[#f7768e] cursor-pointer"
-                                onClick={() =>
-                                  onUserAction({
-                                    kind: 'delete-user',
-                                    nickname: user.nickname,
-                                  })
-                                }
-                              >
-                                delete
-                              </button>
-                            </>
-                          )}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
+                ))}
               </div>
+            ) : filteredUsers.length === 0 ? (
+              <div className="admin-empty-state">
+                <FontAwesomeIcon icon={faShieldHalved} aria-hidden="true" />
+                <strong>
+                  {search ? 'No matching users' : `No ${view} users`}
+                </strong>
+                <span>
+                  {search
+                    ? 'Try a different nickname.'
+                    : view === 'active'
+                      ? 'New accounts will appear here.'
+                      : 'Banned accounts will appear here.'}
+                </span>
+              </div>
+            ) : (
+              <ul className="admin-users">
+                {filteredUsers.map((user) => (
+                  <li key={user.nickname} className="admin-user-row">
+                    <span className="admin-user-copy">
+                      <strong>{user.nickname}</strong>
+                      <span>{getJoinedLabel(user.created_at)}</span>
+                    </span>
+                    <span className="admin-user-actions">
+                      {view === 'active' ? (
+                        <button
+                          type="button"
+                          className="admin-action-button"
+                          onClick={() =>
+                            onUserAction({
+                              kind: 'ban',
+                              nickname: user.nickname,
+                            })
+                          }
+                          aria-label={`Ban ${user.nickname}`}
+                        >
+                          <FontAwesomeIcon icon={faBan} aria-hidden="true" />
+                          <span>Ban</span>
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          className="admin-action-button admin-action-button-positive"
+                          onClick={() =>
+                            onUserAction({
+                              kind: 'unban',
+                              nickname: user.nickname,
+                            })
+                          }
+                          aria-label={`Unban ${user.nickname}`}
+                        >
+                          <FontAwesomeIcon
+                            icon={faArrowRotateLeft}
+                            aria-hidden="true"
+                          />
+                          <span>Unban</span>
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        className="admin-delete-button"
+                        onClick={() =>
+                          onUserAction({
+                            kind: 'delete-user',
+                            nickname: user.nickname,
+                          })
+                        }
+                        aria-label={`Delete ${user.nickname}`}
+                      >
+                        <FontAwesomeIcon icon={faTrashCan} aria-hidden="true" />
+                      </button>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          <div className="admin-danger-zone">
+            <div className="admin-danger-icon" aria-hidden="true">
+              <FontAwesomeIcon icon={faTriangleExclamation} />
             </div>
-          )}
+            <div className="admin-danger-copy">
+              <strong>Clear chat history</strong>
+              <span>Removes all messages and system logs</span>
+            </div>
+            <button
+              type="button"
+              className="admin-clear-button"
+              onClick={onOpenClearChatConfirm}
+            >
+              Clear
+            </button>
+          </div>
         </div>
       </div>
     </div>

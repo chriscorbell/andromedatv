@@ -1,4 +1,9 @@
 import { useId, useRef } from 'react'
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
+import {
+  faArrowRotateLeft,
+  faTriangleExclamation,
+} from '@fortawesome/free-solid-svg-icons'
 import { useDialogFocus } from '../hooks/use-dialog-focus'
 
 type AdminConfirmModalProps = {
@@ -7,6 +12,7 @@ type AdminConfirmModalProps = {
   onCancel: () => void
   onConfirm: () => void
   title: string
+  tone?: 'accent' | 'danger'
   visible: boolean
 }
 
@@ -16,6 +22,7 @@ export function AdminConfirmModal({
   onCancel,
   onConfirm,
   title,
+  tone = 'danger',
   visible,
 }: AdminConfirmModalProps) {
   const titleId = useId()
@@ -29,7 +36,8 @@ export function AdminConfirmModal({
 
   return (
     <div
-      className={`fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4 transition-opacity duration-200 ${active ? 'opacity-100' : 'pointer-events-none opacity-0'}`}
+      className="admin-overlay"
+      data-active={active}
       onClick={onCancel}
     >
       <div
@@ -39,26 +47,35 @@ export function AdminConfirmModal({
         aria-labelledby={titleId}
         aria-describedby={body ? bodyId : undefined}
         tabIndex={-1}
-        className={`w-full max-w-md border border-zinc-800 bg-[#050505] p-6 text-zinc-200 shadow-xl transition duration-200 ${active ? 'translate-y-0 scale-100 opacity-100' : 'translate-y-2 scale-95 opacity-0'}`}
+        className="admin-confirm-dialog"
+        data-active={active}
+        data-tone={tone}
         onClick={(event) => event.stopPropagation()}
       >
-        <div className="ui-header font-extrabold">confirm</div>
-        <p id={titleId} className="mt-3 text-zinc-400">{title}</p>
-        {body && (
-          <p id={bodyId} className="mt-2 text-zinc-500">{body}</p>
-        )}
-        <div className="mt-4 flex items-center justify-end gap-3">
+        <div className="admin-confirm-icon" aria-hidden="true">
+          <FontAwesomeIcon
+            icon={
+              tone === 'accent' ? faArrowRotateLeft : faTriangleExclamation
+            }
+          />
+        </div>
+        <div className="admin-confirm-copy">
+          <span>Confirm action</span>
+          <h2 id={titleId}>{title}</h2>
+          {body && <p id={bodyId}>{body}</p>}
+        </div>
+        <div className="admin-confirm-actions">
           <button
             ref={cancelButtonRef}
             type="button"
-            className="text-zinc-400 transition hover:text-zinc-100 cursor-pointer"
+            className="admin-confirm-cancel"
             onClick={onCancel}
           >
             cancel
           </button>
           <button
             type="button"
-            className="border border-zinc-700 bg-zinc-900 px-3 py-1 text-zinc-100 transition hover:border-zinc-500 cursor-pointer"
+            className="admin-confirm-submit"
             onClick={onConfirm}
           >
             confirm

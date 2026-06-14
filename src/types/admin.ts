@@ -11,7 +11,9 @@ export type AdminUser = {
   created_at: string
 }
 
-export type AdminMenuView = 'main' | 'active' | 'banned'
+export type AdminMenuView = 'active' | 'banned'
+export type AdminUserLists = Record<AdminMenuView, AdminUser[]>
+export type AdminUserLoading = Record<AdminMenuView, boolean>
 export type AdminConfirmReturnView = AdminMenuView | 'message-actions' | null
 
 export type AdminMessageActionTarget = {

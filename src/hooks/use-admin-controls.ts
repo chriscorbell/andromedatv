@@ -5,7 +5,8 @@ import type {
   AdminConfirmReturnView,
   AdminMenuView,
   AdminMessageActionTarget,
-  AdminUser,
+  AdminUserLists,
+  AdminUserLoading,
 } from '../types/admin'
 
 type UseAdminControlsOptions = {
@@ -16,10 +17,15 @@ type UseAdminControlsOptions = {
   setChatError: (value: string | null) => void
 }
 
-const waitForAnimation = (delay: number) =>
-  new Promise<void>((resolve) => {
-    window.setTimeout(resolve, delay)
-  })
+const emptyUserLists: AdminUserLists = {
+  active: [],
+  banned: [],
+}
+
+const emptyUserLoading: AdminUserLoading = {
+  active: false,
+  banned: false,
+}
 
 const getAdminConfirmCopy = (action: AdminAction | null) => {
   if (!action) {
@@ -95,11 +101,13 @@ export function useAdminControls({
   const [adminMenuVisible, setAdminMenuVisible] = useState(false)
   const [adminMenuActive, setAdminMenuActive] = useState(false)
   const adminMenuTimeoutRef = useRef<number | null>(null)
-  const [adminMenuView, setAdminMenuView] = useState<AdminMenuView>('main')
+  const [adminMenuView, setAdminMenuView] = useState<AdminMenuView>('active')
   const [adminMenuViewAnimating, setAdminMenuViewAnimating] = useState(false)
-  const [adminUserList, setAdminUserList] = useState<AdminUser[]>([])
+  const [adminUserLists, setAdminUserLists] =
+    useState<AdminUserLists>(emptyUserLists)
   const [adminUserSearch, setAdminUserSearch] = useState('')
-  const [adminUserLoading, setAdminUserLoading] = useState(false)
+  const [adminUserLoading, setAdminUserLoading] =
+    useState<AdminUserLoading>(emptyUserLoading)
 
   const fetchAdminUsers = useCallback(async (view: 'active' | 'banned') => {
     if (!authIsAdmin) {
@@ -108,7 +116,7 @@ export function useAdminControls({
       return
     }
 
-    setAdminUserLoading(true)
+    setAdminUserLoading((current) => ({ ...current, [view]: true }))
     try {
       const endpoint = view === 'active' ? 'active' : 'banned'
       const { data, response } = await api.admin.getUsers(endpoint)
@@ -123,14 +131,24 @@ export function useAdminControls({
         return
       }
 
-      setAdminUserList(data.users)
+      setAdminUserLists((current) => ({
+        ...current,
+        [view]: data.users,
+      }))
     } catch (error) {
       console.warn('Failed to fetch admin users', error)
       setChatError('Failed to load user list.')
     } finally {
-      setAdminUserLoading(false)
+      setAdminUserLoading((current) => ({ ...current, [view]: false }))
     }
   }, [authIsAdmin, setChatError])
+
+  const fetchAllAdminUsers = useCallback(async () => {
+    await Promise.all([
+      fetchAdminUsers('active'),
+      fetchAdminUsers('banned'),
+    ])
+  }, [fetchAdminUsers])
 
   const openAdminConfirm = useCallback((
     action: AdminAction,
@@ -280,24 +298,26 @@ export function useAdminControls({
 
     setAdminMenuView(returnView)
     setAdminMenuOpen(true)
-    if (returnView !== 'main') {
-      void fetchAdminUsers(returnView)
-    }
+    void fetchAllAdminUsers()
   }, [
     adminConfirmRestoreOnClose,
     adminConfirmReturnView,
     adminMessageActionTarget,
-    fetchAdminUsers,
+    fetchAllAdminUsers,
   ])
 
   const confirmAdminAction = useCallback(async () => {
+    setAdminConfirmRestoreOnClose(
+      adminConfirmReturnView !== null &&
+        adminConfirmReturnView !== 'message-actions',
+    )
     setAdminConfirmOpen(false)
     if (!adminAction) {
       return
     }
 
     await performAdminAction(adminAction)
-  }, [adminAction, performAdminAction])
+  }, [adminAction, adminConfirmReturnView, performAdminAction])
 
   const cancelAdminConfirm = useCallback(() => {
     setAdminConfirmRestoreOnClose(adminConfirmReturnView !== null)
@@ -317,8 +337,11 @@ export function useAdminControls({
       return
     }
 
+    setAdminMenuView('active')
+    setAdminUserSearch('')
     setAdminMenuOpen(true)
-  }, [authIsAdmin])
+    void fetchAllAdminUsers()
+  }, [authIsAdmin, fetchAllAdminUsers])
 
   const openAdminMessageActions = useCallback((messageId: number, nickname: string) => {
     if (!authIsAdmin) {
@@ -336,23 +359,10 @@ export function useAdminControls({
     setAdminMessageActionsOpen(false)
   }, [openAdminConfirm])
 
-  const openAdminMenuView = useCallback(async (view: 'active' | 'banned') => {
+  const openAdminMenuView = useCallback((view: 'active' | 'banned') => {
     setAdminUserSearch('')
     setAdminMenuViewAnimating(true)
-    await waitForAnimation(120)
     setAdminMenuView(view)
-    await fetchAdminUsers(view)
-    window.requestAnimationFrame(() => {
-      setAdminMenuViewAnimating(false)
-    })
-  }, [fetchAdminUsers])
-
-  const backToAdminMain = useCallback(async () => {
-    setAdminMenuViewAnimating(true)
-    await waitForAnimation(120)
-    setAdminMenuView('main')
-    setAdminUserList([])
-    setAdminUserSearch('')
     window.requestAnimationFrame(() => {
       setAdminMenuViewAnimating(false)
     })
@@ -364,9 +374,9 @@ export function useAdminControls({
   }, [adminMenuView, openAdminConfirm])
 
   const openClearChatConfirm = useCallback(() => {
-    openAdminConfirm({ kind: 'clear' }, 'main')
+    openAdminConfirm({ kind: 'clear' }, adminMenuView)
     setAdminMenuOpen(false)
-  }, [openAdminConfirm])
+  }, [adminMenuView, openAdminConfirm])
 
   useEffect(() => {
     if (adminConfirmTimeoutRef.current) {
@@ -440,8 +450,9 @@ export function useAdminControls({
       setAdminMenuActive(false)
       adminMenuTimeoutRef.current = window.setTimeout(() => {
         setAdminMenuVisible(false)
-        setAdminMenuView('main')
-        setAdminUserList([])
+        setAdminMenuView('active')
+        setAdminUserLists(emptyUserLists)
+        setAdminUserLoading(emptyUserLoading)
         setAdminUserSearch('')
       }, 200)
     }
@@ -453,11 +464,7 @@ export function useAdminControls({
         cancelAdminConfirm()
       }
       if (adminMenuOpen) {
-        if (adminMenuView !== 'main') {
-          void backToAdminMain()
-        } else {
-          closeAdminMenu()
-        }
+        closeAdminMenu()
       }
       if (adminMessageActionsOpen) {
         closeAdminMessageActions()
@@ -471,9 +478,7 @@ export function useAdminControls({
   }, [
     adminConfirmOpen,
     adminMenuOpen,
-    adminMenuView,
     adminMessageActionsOpen,
-    backToAdminMain,
     cancelAdminConfirm,
     closeAdminMenu,
     closeAdminMessageActions,
@@ -515,12 +520,13 @@ export function useAdminControls({
     adminConfirm: {
       active: adminConfirmActive,
       body: adminConfirmCopy.body,
+      tone: adminAction?.kind === 'unban' ? 'accent' as const : 'danger' as const,
       title: adminConfirmCopy.title,
       visible: adminConfirmVisible,
     },
     adminMenu: {
       active: adminMenuActive,
-      userList: adminUserList,
+      userLists: adminUserLists,
       userLoading: adminUserLoading,
       userSearch: adminUserSearch,
       view: adminMenuView,
@@ -532,7 +538,6 @@ export function useAdminControls({
       target: adminMessageActionTarget,
       visible: adminMessageActionsVisible,
     },
-    backToAdminMain,
     cancelAdminConfirm,
     closeAdminMenu,
     closeAdminMessageActions,

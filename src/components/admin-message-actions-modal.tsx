@@ -1,6 +1,12 @@
 import { useId, useRef } from 'react'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
-import { faXmark } from '@fortawesome/free-solid-svg-icons'
+import {
+  faBan,
+  faShieldHalved,
+  faTrashCan,
+  faTriangleExclamation,
+  faXmark,
+} from '@fortawesome/free-solid-svg-icons'
 import { useDialogFocus } from '../hooks/use-dialog-focus'
 import type { AdminAction, AdminMessageActionTarget } from '../types/admin'
 
@@ -32,7 +38,8 @@ export function AdminMessageActionsModal({
 
   return (
     <div
-      className={`fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4 transition-opacity duration-200 ${active ? 'opacity-100' : 'pointer-events-none opacity-0'}`}
+      className="admin-overlay"
+      data-active={active}
       onClick={onClose}
     >
       <div
@@ -42,29 +49,34 @@ export function AdminMessageActionsModal({
         aria-labelledby={titleId}
         aria-describedby={bodyId}
         tabIndex={-1}
-        className={`w-full max-w-sm border border-zinc-800 bg-[#050505] p-6 text-zinc-200 shadow-xl transition duration-200 ${active ? 'translate-y-0 scale-100 opacity-100' : 'translate-y-2 scale-95 opacity-0'}`}
+        className="admin-message-dialog"
+        data-active={active}
         onClick={(event) => event.stopPropagation()}
       >
-        <div className="flex items-start justify-between gap-4">
-          <div id={titleId} className="ui-header font-extrabold">message actions</div>
+        <header className="admin-message-header">
+          <div className="admin-message-mark" aria-hidden="true">
+            <FontAwesomeIcon icon={faShieldHalved} />
+          </div>
+          <div>
+            <h2 id={titleId}>Message actions</h2>
+            <p id={bodyId}>
+              Moderate <strong>{target.nickname}</strong>
+            </p>
+          </div>
           <button
             ref={closeButtonRef}
             type="button"
-            className="inline-flex h-6 w-6 items-center justify-center text-zinc-500 transition hover:text-zinc-200 cursor-pointer"
+            className="admin-icon-button admin-close-button"
             onClick={onClose}
             aria-label="Close message actions"
           >
-            <FontAwesomeIcon icon={faXmark} className="text-[16px]" />
+            <FontAwesomeIcon icon={faXmark} />
           </button>
-        </div>
-        <p id={bodyId} className="mt-3 text-zinc-500">
-          choose an action for{' '}
-          <span className="text-zinc-300">{target.nickname}</span>
-        </p>
-        <div className="mt-4 flex flex-col gap-2">
+        </header>
+
+        <div className="admin-message-options">
           <button
             type="button"
-            className="w-full border border-zinc-800 px-3 py-2 text-left text-zinc-400 transition hover:border-zinc-600 hover:text-zinc-100 cursor-pointer"
             onClick={() =>
               onSelectAction({
                 kind: 'delete',
@@ -72,11 +84,14 @@ export function AdminMessageActionsModal({
               })
             }
           >
-            delete
+            <FontAwesomeIcon icon={faTrashCan} aria-hidden="true" />
+            <span>
+              <strong>Delete message</strong>
+              <small>Replace this message with a deletion notice</small>
+            </span>
           </button>
           <button
             type="button"
-            className="w-full border border-zinc-800 px-3 py-2 text-left text-zinc-400 transition hover:border-zinc-600 hover:text-zinc-100 cursor-pointer"
             onClick={() =>
               onSelectAction({
                 kind: 'warn',
@@ -84,11 +99,14 @@ export function AdminMessageActionsModal({
               })
             }
           >
-            delete and warn
+            <FontAwesomeIcon icon={faTriangleExclamation} aria-hidden="true" />
+            <span>
+              <strong>Delete and warn</strong>
+              <small>Remove the message and notify the user</small>
+            </span>
           </button>
           <button
             type="button"
-            className="w-full border border-zinc-800 px-3 py-2 text-left text-zinc-400 transition hover:border-zinc-600 hover:text-zinc-100 cursor-pointer"
             onClick={() =>
               onSelectAction({
                 kind: 'ban',
@@ -96,7 +114,11 @@ export function AdminMessageActionsModal({
               })
             }
           >
-            ban
+            <FontAwesomeIcon icon={faBan} aria-hidden="true" />
+            <span>
+              <strong>Ban user</strong>
+              <small>Block access and redact their messages</small>
+            </span>
           </button>
         </div>
       </div>

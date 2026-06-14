@@ -1,19 +1,25 @@
 import { AdminConfirmModal } from './admin-confirm-modal'
 import { AdminMenuModal } from './admin-menu-modal'
 import { AdminMessageActionsModal } from './admin-message-actions-modal'
-import type { AdminAction, AdminMenuView, AdminUser } from '../types/admin'
+import type {
+  AdminAction,
+  AdminMenuView,
+  AdminUserLists,
+  AdminUserLoading,
+} from '../types/admin'
 
 type AdminOverlaysProps = {
   adminConfirm: {
     active: boolean
     body: string
+    tone: 'accent' | 'danger'
     title: string
     visible: boolean
   }
   adminMenu: {
     active: boolean
-    userList: AdminUser[]
-    userLoading: boolean
+    userLists: AdminUserLists
+    userLoading: AdminUserLoading
     userSearch: string
     view: AdminMenuView
     viewAnimating: boolean
@@ -27,7 +33,6 @@ type AdminOverlaysProps = {
     } | null
     visible: boolean
   }
-  onBack: () => void
   onCancelConfirm: () => void
   onCloseMenu: () => void
   onCloseMessageActions: () => void
@@ -45,7 +50,6 @@ function AdminOverlays({
   adminConfirm,
   adminMenu,
   adminMessageActions,
-  onBack,
   onCancelConfirm,
   onCloseMenu,
   onCloseMessageActions,
@@ -60,14 +64,13 @@ function AdminOverlays({
     <>
       <AdminMenuModal
         active={adminMenu.active}
-        onBack={onBack}
         onClose={onCloseMenu}
         onOpenClearChatConfirm={onOpenClearChatConfirm}
         onOpenUserView={onOpenUserView}
         onSearchChange={onSearchChange}
         onUserAction={onUserAction}
         search={adminMenu.userSearch}
-        userList={adminMenu.userList}
+        userLists={adminMenu.userLists}
         userLoading={adminMenu.userLoading}
         view={adminMenu.view}
         viewAnimating={adminMenu.viewAnimating}
@@ -85,6 +88,7 @@ function AdminOverlays({
         body={adminConfirm.body}
         onCancel={onCancelConfirm}
         onConfirm={onConfirm}
+        tone={adminConfirm.tone}
         title={adminConfirm.title}
         visible={adminConfirm.visible}
       />
