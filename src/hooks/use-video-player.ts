@@ -3,19 +3,24 @@ import type Hls from 'hls.js/light'
 import { useVideoPlayerControls } from './use-video-player-controls'
 
 const HLS_URL = '/iptv/session/1/hls.m3u8'
-const PLAYBACK_WATCHDOG_INTERVAL_MS = 10_000
 const PLAYBACK_DEBUG_STORAGE_KEY = 'andromeda:playback-debug'
+// If 'playing' has not fired this long after a (re)start, assume the attempt
+// wedged and restart it. This is a single timer per attempt, not a poll loop —
+// hls.js already detects and nudges buffer stalls on its own.
+const STARTUP_GUARD_MS = 15_000
+// Restart with this delay after a fatal error so we back off the upstream.
+const RESTART_DELAY_MS = 2_000
+// Escalate to the "offline" UI (manual retry affordance) after this many
+// consecutive failed recovery attempts.
+const MAX_RECOVERY_ATTEMPTS = 3
 
 type HlsCtor = typeof import('hls.js/light').default
 type PlaybackState = 'connecting' | 'live' | 'reconnecting' | 'offline'
 type PlaybackTransport = 'native' | 'hls'
 
 type PlaybackMetric = {
-  attempt: number
   detail?: string
-  durationMs?: number
   event: string
-  phase: 'recovery' | 'startup'
   transport: PlaybackTransport
   ts: string
 }
@@ -52,6 +57,26 @@ async function loadSharedHlsCtor() {
   return cachedHlsCtorPromise
 }
 
+// Pick the playback transport. hls.js (Media Source Extensions) is preferred
+// whenever it is supported because it transmuxes the MPEG-TS segments and
+// manages the live buffer reliably across browsers. Native HLS is only a
+// fallback for engines without MSE (e.g. iOS Safari). This deliberately ignores
+// a truthy `canPlayType('application/vnd.apple.mpegurl')` when hls.js is
+// available: Chrome on macOS reports "maybe" there but cannot decode the raw TS
+// segments, which is what previously sent it down a stalling native path.
+export function selectPlaybackTransport(options: {
+  hlsJsSupported: boolean
+  nativeHlsSupported: boolean
+}): PlaybackTransport | 'none' {
+  if (options.hlsJsSupported) {
+    return 'hls'
+  }
+  if (options.nativeHlsSupported) {
+    return 'native'
+  }
+  return 'none'
+}
+
 function shouldRecordPlaybackMetrics() {
   if (import.meta.env.DEV) {
     return true
@@ -69,25 +94,18 @@ function recordPlaybackMetric(metric: PlaybackMetric) {
     return
   }
 
-  const payload = {
-    scope: 'andromeda.playback',
-    ...metric,
-  }
-
   const metricsWindow = window as Window & {
     __andromedaPlaybackMetrics?: PlaybackMetric[]
   }
   const existingMetrics = metricsWindow.__andromedaPlaybackMetrics ?? []
   metricsWindow.__andromedaPlaybackMetrics = [...existingMetrics.slice(-24), metric]
-  console.info('[andromeda.playback]', payload)
+  console.info('[andromeda.playback]', { scope: 'andromeda.playback', ...metric })
 }
 
 export function useVideoPlayer() {
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const videoFrameRef = useRef<HTMLDivElement | null>(null)
   const hlsRef = useRef<Hls | null>(null)
-  const hlsRestartTimeoutRef = useRef<number | null>(null)
-  const playbackRetryTimeoutRef = useRef<number | null>(null)
   const forcePlaybackRecoveryRef = useRef<() => void>(() => {})
   const [playbackState, setPlaybackState] = useState<PlaybackState>('connecting')
   const [playbackStatusDetail, setPlaybackStatusDetail] = useState(
@@ -145,199 +163,83 @@ export function useVideoPlayer() {
       return
     }
 
-    const supportsNativeHls = Boolean(
-      video.canPlayType('application/vnd.apple.mpegurl'),
-    )
+    let disposed = false
+    let transport: PlaybackTransport = 'hls'
+    let playbackStartedOnce = false
+    let attemptPlaying = false
+    let recoveryAttempts = 0
+    let restartTimeout: number | null = null
+    let playRetryTimeout: number | null = null
+    let startupGuardTimeout: number | null = null
 
     const clearRestartTimer = () => {
-      if (hlsRestartTimeoutRef.current) {
-        window.clearTimeout(hlsRestartTimeoutRef.current)
-        hlsRestartTimeoutRef.current = null
+      if (restartTimeout !== null) {
+        window.clearTimeout(restartTimeout)
+        restartTimeout = null
       }
     }
 
-    const clearPlaybackRetryTimer = () => {
-      if (playbackRetryTimeoutRef.current) {
-        window.clearTimeout(playbackRetryTimeoutRef.current)
-        playbackRetryTimeoutRef.current = null
+    const clearPlayRetryTimer = () => {
+      if (playRetryTimeout !== null) {
+        window.clearTimeout(playRetryTimeout)
+        playRetryTimeout = null
+      }
+    }
+
+    const clearStartupGuard = () => {
+      if (startupGuardTimeout !== null) {
+        window.clearTimeout(startupGuardTimeout)
+        startupGuardTimeout = null
       }
     }
 
     const destroyHls = () => {
-      if (!hlsRef.current) {
-        return
+      if (hlsRef.current) {
+        hlsRef.current.destroy()
+        hlsRef.current = null
       }
-      hlsRef.current.destroy()
-      hlsRef.current = null
     }
 
-    let recoveryInProgress = false
-    let playbackWatchdogTimeout: number | null = null
-    let startupRestartTimeout: number | null = null
-    let lastPlaybackTime = 0
-    let stalledChecks = 0
-    let recoveryAttempts = 0
-    let startupAttempts = 0
-    let manifestLoaded = false
-    let playbackStarted = false
-    let playbackStartedOnce = false
-    let disposed = false
-    let hlsSupportKnown = supportsNativeHls
-    let activePlaybackAttempt:
-      | {
-          attempt: number
-          phase: 'recovery' | 'startup'
-          startedAtMs: number
-          transport: PlaybackTransport
-        }
-      | null = null
+    const logMetric = (event: string, detail?: string) => {
+      recordPlaybackMetric({
+        detail,
+        event,
+        transport,
+        ts: new Date().toISOString(),
+      })
+    }
 
-    const setPlaybackUiState = (
-      nextState: PlaybackState,
-      detail: string,
-    ) => {
-      setPlaybackState((current) =>
-        current === nextState ? current : nextState,
-      )
-      setPlaybackStatusDetail((current) =>
-        current === detail ? current : detail,
-      )
+    const setPlaybackUiState = (nextState: PlaybackState, detail: string) => {
+      setPlaybackState((current) => (current === nextState ? current : nextState))
+      setPlaybackStatusDetail((current) => (current === detail ? current : detail))
     }
 
     const markConnecting = (detail = 'Connecting to live stream...') => {
       setPlaybackUiState('connecting', detail)
     }
 
-    const markRecovering = (
-      detail = 'Reconnecting to the live stream...',
-    ) => {
-      setPlaybackUiState(
-        playbackStartedOnce ? 'reconnecting' : 'connecting',
-        detail,
-      )
+    const markReconnecting = (detail = 'Reconnecting to the live stream...') => {
+      setPlaybackUiState(playbackStartedOnce ? 'reconnecting' : 'connecting', detail)
     }
 
     const markOffline = (detail = 'Stream unavailable. Still retrying...') => {
       setPlaybackUiState('offline', detail)
     }
 
-    const clearStartupRestartTimer = () => {
-      if (startupRestartTimeout) {
-        window.clearTimeout(startupRestartTimeout)
-        startupRestartTimeout = null
-      }
-    }
-
-    const clearPlaybackWatchdog = () => {
-      if (playbackWatchdogTimeout !== null) {
-        window.clearTimeout(playbackWatchdogTimeout)
-        playbackWatchdogTimeout = null
-      }
-    }
-
-    const beginPlaybackAttempt = (
-      phase: 'recovery' | 'startup',
-      transport: PlaybackTransport,
-      detail: string,
-    ) => {
-      let attempt = 1
-      if (phase === 'startup') {
-        startupAttempts += 1
-        attempt = startupAttempts
+    const markStarting = () => {
+      if (playbackStartedOnce) {
+        markReconnecting()
       } else {
-        attempt = Math.max(1, recoveryAttempts)
+        markConnecting()
       }
-
-      activePlaybackAttempt = {
-        attempt,
-        phase,
-        startedAtMs: performance.now(),
-        transport,
-      }
-
-      recordPlaybackMetric({
-        attempt,
-        detail,
-        event: 'attempt_started',
-        phase,
-        transport,
-        ts: new Date().toISOString(),
-      })
-    }
-
-    const completePlaybackAttempt = (detail: string) => {
-      if (!activePlaybackAttempt) {
-        return
-      }
-
-      const completedAttempt = activePlaybackAttempt
-      activePlaybackAttempt = null
-
-      recordPlaybackMetric({
-        attempt: completedAttempt.attempt,
-        detail,
-        durationMs: Math.round(performance.now() - completedAttempt.startedAtMs),
-        event: 'attempt_succeeded',
-        phase: completedAttempt.phase,
-        transport: completedAttempt.transport,
-        ts: new Date().toISOString(),
-      })
-    }
-
-    const failPlaybackAttempt = (detail: string) => {
-      if (!activePlaybackAttempt) {
-        return
-      }
-
-      const failedAttempt = activePlaybackAttempt
-      activePlaybackAttempt = null
-
-      recordPlaybackMetric({
-        attempt: failedAttempt.attempt,
-        detail,
-        durationMs: Math.round(performance.now() - failedAttempt.startedAtMs),
-        event: 'attempt_degraded',
-        phase: failedAttempt.phase,
-        transport: failedAttempt.transport,
-        ts: new Date().toISOString(),
-      })
-    }
-
-    const loadHlsCtor = async () => {
-      const ctor = await loadSharedHlsCtor()
-      if (disposed) {
-        return null
-      }
-
-      hlsSupportKnown = Boolean(ctor)
-      return ctor
     }
 
     const getStreamUrl = () =>
       `${HLS_URL}${HLS_URL.includes('?') ? '&' : '?'}ts=${Date.now()}`
 
-    const scheduleStartupRestart = (delay = 12_000) => {
-      if (!supportsNativeHls && !hlsSupportKnown) {
-        return
-      }
-
-      if (playbackStartedOnce) {
-        markRecovering('The stream is taking longer than expected. Retrying...')
-      } else {
-        markConnecting('Connecting to live stream...')
-      }
-
-      clearStartupRestartTimer()
-      startupRestartTimeout = window.setTimeout(() => {
-        if (!playbackStarted) {
-          void restartStream(0)
-        }
-      }, delay)
-    }
-
-    const schedulePlaybackRetry = (delay = 750) => {
-      clearPlaybackRetryTimer()
-      playbackRetryTimeoutRef.current = window.setTimeout(() => {
+    const tryPlay = (delay = 0) => {
+      clearPlayRetryTimer()
+      playRetryTimeout = window.setTimeout(() => {
         const playAttempt = video.play()
         if (!playAttempt) {
           return
@@ -345,113 +247,51 @@ export function useVideoPlayer() {
 
         void playAttempt.catch(() => {
           if (document.visibilityState === 'visible' && !video.ended) {
-            schedulePlaybackRetry(1000)
+            tryPlay(1000)
           }
         })
       }, delay)
     }
 
-    const handleReady = () => {
-      manifestLoaded = true
-      stalledChecks = 0
-      lastPlaybackTime = video.currentTime
-      if (!playbackStarted) {
-        markRecovering(
-          playbackStartedOnce
-            ? 'Buffering the live stream...'
-            : 'Connecting to live stream...',
-        )
-      }
-
-      if (video.paused) {
-        schedulePlaybackRetry(0)
-        return
-      }
-
-      clearPlaybackRetryTimer()
-    }
-
-    const handlePlaying = () => {
-      recoveryAttempts = 0
-      playbackStarted = true
-      playbackStartedOnce = true
-      manifestLoaded = true
-      stalledChecks = 0
-      lastPlaybackTime = video.currentTime
-      setPlaybackUiState('live', 'Live now')
-      completePlaybackAttempt('Playback reached the live state.')
-      clearPlaybackRetryTimer()
-      clearStartupRestartTimer()
-    }
-
-    const restartStream = async (delay = 1500) => {
-      recoveryAttempts += 1
-      failPlaybackAttempt('Scheduling a playback restart.')
-      if (recoveryAttempts >= 3) {
-        markOffline('Stream unavailable. Retrying automatically...')
-      } else {
-        markRecovering('Reconnecting to the live stream...')
-      }
-
-      clearRestartTimer()
-      clearStartupRestartTimer()
-      hlsRestartTimeoutRef.current = window.setTimeout(() => {
-        if (supportsNativeHls) {
-          startNativeStream('Automatic recovery restart')
-          return
+    const armStartupGuard = () => {
+      clearStartupGuard()
+      attemptPlaying = false
+      startupGuardTimeout = window.setTimeout(() => {
+        if (!disposed && !attemptPlaying) {
+          logMetric('attempt_degraded', 'Playback did not start; restarting.')
+          recoveryAttempts += 1
+          restart(0)
         }
-
-        void startHls('Automatic recovery restart')
-      }, delay)
+      }, STARTUP_GUARD_MS)
     }
 
-    const startNativeStream = (detail = 'Starting native HLS playback') => {
-      playbackStarted = false
-      manifestLoaded = false
-      beginPlaybackAttempt(
-        playbackStartedOnce ? 'recovery' : 'startup',
-        'native',
-        detail,
-      )
-      if (playbackStartedOnce) {
-        markRecovering('Reconnecting to the live stream...')
-      } else {
-        markConnecting('Connecting to live stream...')
-      }
-      clearRestartTimer()
-      clearStartupRestartTimer()
+    const startNative = () => {
+      transport = 'native'
       destroyHls()
-      video.pause()
+      logMetric('attempt_started', 'Native HLS playback')
+      markStarting()
       video.src = getStreamUrl()
       video.load()
-      schedulePlaybackRetry(0)
-      scheduleStartupRestart()
+      tryPlay(0)
+      armStartupGuard()
     }
 
-    const startHls = async (detail = 'Starting hls.js playback') => {
-      playbackStarted = false
-      manifestLoaded = false
-      beginPlaybackAttempt(
-        playbackStartedOnce ? 'recovery' : 'startup',
-        'hls',
-        detail,
-      )
-      if (playbackStartedOnce) {
-        markRecovering('Reconnecting to the live stream...')
-      } else {
-        markConnecting('Connecting to live stream...')
-      }
-      clearStartupRestartTimer()
+    const startHls = (HlsImpl: HlsCtor) => {
+      transport = 'hls'
+      logMetric('attempt_started', 'hls.js playback')
+      markStarting()
       destroyHls()
-
-      const HlsImpl = await loadHlsCtor()
-      if (!HlsImpl || disposed) {
-        return
-      }
 
       const hls = new HlsImpl({
         enableWorker: true,
         lowLatencyMode: false,
+        // Treat the channel as an unbounded live window and sit a few segments
+        // back from the live edge so brief upstream hiccups don't underrun.
+        liveDurationInfinity: true,
+        liveSyncDurationCount: 3,
+        // Bound memory growth over hours of continuous playback.
+        backBufferLength: 30,
+        maxBufferLength: 30,
         manifestLoadingTimeOut: 20_000,
         manifestLoadingMaxRetry: 6,
         manifestLoadingRetryDelay: 1500,
@@ -465,198 +305,193 @@ export function useVideoPlayer() {
 
       hls.on(HlsImpl.Events.MEDIA_ATTACHED, () => {
         hls.loadSource(getStreamUrl())
-        scheduleStartupRestart()
       })
 
       hls.on(HlsImpl.Events.MANIFEST_PARSED, () => {
-        manifestLoaded = true
-        schedulePlaybackRetry(0)
+        tryPlay(0)
       })
 
       hls.on(HlsImpl.Events.LEVEL_LOADED, () => {
-        manifestLoaded = true
         if (video.paused) {
-          schedulePlaybackRetry(0)
+          tryPlay(0)
         }
       })
 
       hls.on(HlsImpl.Events.ERROR, (_event, data) => {
+        // hls.js detects and nudges buffer stalls itself; just surface the
+        // buffering state so the overlay can appear if it persists.
+        if (data.details === HlsImpl.ErrorDetails.BUFFER_STALLED_ERROR) {
+          markReconnecting('Playback stalled. Reconnecting...')
+          return
+        }
+
         if (!data.fatal) {
           return
         }
 
-        failPlaybackAttempt(`Fatal ${data.type.toLowerCase()} error: ${data.details}`)
+        recoveryAttempts += 1
+        logMetric('attempt_degraded', `Fatal ${data.type}: ${data.details}`)
 
-        if (data.type === HlsImpl.ErrorTypes.NETWORK_ERROR) {
-          if (
-            !playbackStarted ||
-            data.details === HlsImpl.ErrorDetails.MANIFEST_LOAD_ERROR ||
-            data.details === HlsImpl.ErrorDetails.MANIFEST_LOAD_TIMEOUT ||
-            data.details === HlsImpl.ErrorDetails.LEVEL_EMPTY_ERROR ||
-            data.details === HlsImpl.ErrorDetails.LEVEL_LOAD_ERROR ||
-            data.details === HlsImpl.ErrorDetails.LEVEL_LOAD_TIMEOUT
-          ) {
-            void restartStream(1500)
-            return
-          }
+        if (recoveryAttempts >= MAX_RECOVERY_ATTEMPTS) {
+          markOffline('Stream unavailable. Retrying automatically...')
+        } else {
+          markReconnecting()
+        }
 
-          markRecovering('Lost contact with the stream. Reconnecting...')
+        const isManifestOrLevelLoadError =
+          data.details === HlsImpl.ErrorDetails.MANIFEST_LOAD_ERROR ||
+          data.details === HlsImpl.ErrorDetails.MANIFEST_LOAD_TIMEOUT ||
+          data.details === HlsImpl.ErrorDetails.LEVEL_EMPTY_ERROR ||
+          data.details === HlsImpl.ErrorDetails.LEVEL_LOAD_ERROR ||
+          data.details === HlsImpl.ErrorDetails.LEVEL_LOAD_TIMEOUT
+
+        if (
+          data.type === HlsImpl.ErrorTypes.NETWORK_ERROR &&
+          !isManifestOrLevelLoadError
+        ) {
+          // Transient segment-loading failure: resume loading in place.
           hls.startLoad()
-          schedulePlaybackRetry(500)
-          scheduleStartupRestart(8000)
+          tryPlay(500)
           return
         }
 
-        if (data.type === HlsImpl.ErrorTypes.MEDIA_ERROR) {
-          if (recoveryInProgress || !manifestLoaded) {
-            void restartStream(1500)
-            return
-          }
-
-          markRecovering('Trying to recover video playback...')
-          recoveryInProgress = true
+        if (
+          data.type === HlsImpl.ErrorTypes.MEDIA_ERROR &&
+          recoveryAttempts < 2
+        ) {
+          markReconnecting('Trying to recover video playback...')
           hls.recoverMediaError()
-          schedulePlaybackRetry(250)
-          window.setTimeout(() => {
-            recoveryInProgress = false
-          }, 1500)
+          tryPlay(250)
           return
         }
 
-        void restartStream(1500)
+        // Manifest/level load failures, repeated media errors, and anything
+        // else: tear down and reload the playlist with a fresh cache-buster.
+        restart(RESTART_DELAY_MS)
       })
 
       hls.attachMedia(video)
+      armStartupGuard()
     }
 
-    const nudgePlayback = () => {
-      if (!video.paused || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
-        markRecovering(
-          playbackStartedOnce
-            ? 'Playback stalled. Reconnecting...'
-            : 'Connecting to live stream...',
-        )
-      }
-      if (hlsRef.current) {
-        hlsRef.current.startLoad()
-      }
-      schedulePlaybackRetry(0)
-    }
-
-    const schedulePlaybackWatchdog = () => {
-      clearPlaybackWatchdog()
-      if (disposed || document.visibilityState === 'hidden') {
+    const start = () => {
+      const HlsImpl = cachedHlsCtor
+      if (HlsImpl) {
+        startHls(HlsImpl)
         return
       }
+      if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        startNative()
+        return
+      }
+      markOffline('This browser cannot play the live stream.')
+    }
 
-      playbackWatchdogTimeout = window.setTimeout(() => {
-        playbackWatchdogTimeout = null
-
-        if (video.ended) {
-          lastPlaybackTime = video.currentTime
-          stalledChecks = 0
-          schedulePlaybackWatchdog()
-          return
+    const restart = (delay = RESTART_DELAY_MS) => {
+      clearRestartTimer()
+      clearStartupGuard()
+      restartTimeout = window.setTimeout(() => {
+        if (!disposed) {
+          start()
         }
+      }, delay)
+    }
 
-        if (video.paused) {
-          lastPlaybackTime = video.currentTime
-          stalledChecks = 0
-          if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
-            schedulePlaybackRetry(0)
-          }
-          schedulePlaybackWatchdog()
-          return
-        }
+    const handlePlaying = () => {
+      attemptPlaying = true
+      playbackStartedOnce = true
+      recoveryAttempts = 0
+      clearStartupGuard()
+      clearPlayRetryTimer()
+      logMetric('attempt_live', 'Playback reached the live state.')
+      setPlaybackUiState('live', 'Live now')
+    }
 
-        const currentTime = video.currentTime
-        if (currentTime <= lastPlaybackTime + 0.01) {
-          stalledChecks += 1
-        } else {
-          stalledChecks = 0
-        }
-
-        lastPlaybackTime = currentTime
-
-        if (stalledChecks >= 3) {
-          stalledChecks = 0
-          nudgePlayback()
-        }
-
-        schedulePlaybackWatchdog()
-      }, PLAYBACK_WATCHDOG_INTERVAL_MS)
+    const handleReady = () => {
+      if (video.paused) {
+        tryPlay(0)
+      }
     }
 
     const handleWaiting = () => {
-      nudgePlayback()
+      if (playbackStartedOnce) {
+        markReconnecting('Playback stalled. Reconnecting...')
+      } else {
+        markConnecting('Buffering the live stream...')
+      }
     }
 
     const handleVideoError = () => {
-      if (!playbackStarted) {
-        void restartStream(1500)
-        return
+      // hls.js owns recovery while it is attached; this is mainly the native path.
+      if (transport === 'native') {
+        recoveryAttempts += 1
+        if (recoveryAttempts >= MAX_RECOVERY_ATTEMPTS) {
+          markOffline('Stream unavailable. Retrying automatically...')
+        } else {
+          markReconnecting()
+        }
+        restart(RESTART_DELAY_MS)
       }
-
-      nudgePlayback()
     }
 
     const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        if (video.paused) {
-          nudgePlayback()
-        }
-        schedulePlaybackWatchdog()
-        return
+      if (document.visibilityState === 'visible' && video.paused && !video.ended) {
+        tryPlay(0)
       }
-
-      clearPlaybackWatchdog()
     }
 
     forcePlaybackRecoveryRef.current = () => {
       recoveryAttempts = 0
-      failPlaybackAttempt('Manual playback retry requested.')
-      markRecovering('Retrying the live stream...')
       clearRestartTimer()
-      clearPlaybackRetryTimer()
-      clearStartupRestartTimer()
-
-      if (supportsNativeHls) {
-        startNativeStream('Manual retry')
-        return
-      }
-
-      void startHls('Manual retry')
+      clearPlayRetryTimer()
+      logMetric('manual_retry', 'Manual playback retry requested.')
+      markReconnecting('Retrying the live stream...')
+      start()
     }
 
     video.addEventListener('loadedmetadata', handleReady)
     video.addEventListener('canplay', handleReady)
     video.addEventListener('playing', handlePlaying)
-    video.addEventListener('error', handleVideoError)
     video.addEventListener('waiting', handleWaiting)
     video.addEventListener('stalled', handleWaiting)
+    video.addEventListener('error', handleVideoError)
     document.addEventListener('visibilitychange', handleVisibilityChange)
 
-    if (supportsNativeHls) {
-      startNativeStream('Initial player startup')
-    } else {
-      void startHls('Initial player startup')
-    }
-    schedulePlaybackWatchdog()
+    void loadSharedHlsCtor().then((HlsImpl) => {
+      if (disposed) {
+        return
+      }
+
+      const transportChoice = selectPlaybackTransport({
+        hlsJsSupported: Boolean(HlsImpl),
+        nativeHlsSupported: Boolean(
+          video.canPlayType('application/vnd.apple.mpegurl'),
+        ),
+      })
+
+      logMetric('transport_selected', transportChoice)
+
+      if (transportChoice === 'hls' && HlsImpl) {
+        startHls(HlsImpl)
+      } else if (transportChoice === 'native') {
+        startNative()
+      } else {
+        markOffline('This browser cannot play the live stream.')
+      }
+    })
 
     return () => {
       disposed = true
       video.removeEventListener('loadedmetadata', handleReady)
       video.removeEventListener('canplay', handleReady)
       video.removeEventListener('playing', handlePlaying)
-      video.removeEventListener('error', handleVideoError)
       video.removeEventListener('waiting', handleWaiting)
       video.removeEventListener('stalled', handleWaiting)
+      video.removeEventListener('error', handleVideoError)
       document.removeEventListener('visibilitychange', handleVisibilityChange)
-      clearPlaybackWatchdog()
       clearRestartTimer()
-      clearPlaybackRetryTimer()
-      clearStartupRestartTimer()
-      activePlaybackAttempt = null
+      clearPlayRetryTimer()
+      clearStartupGuard()
       forcePlaybackRecoveryRef.current = () => {}
       destroyHls()
       video.removeAttribute('src')
