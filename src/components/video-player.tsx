@@ -100,7 +100,7 @@ export function VideoPlayer({
             <div
               role={playbackRole}
               aria-live={playbackState === 'offline' ? 'assertive' : 'polite'}
-              className={`pointer-events-auto flex w-full max-w-sm flex-col gap-3 rounded-2xl border px-4 py-4 shadow-[0_8px_32px_rgba(0,0,0,0.45)] backdrop-blur-md ${playbackAccentClass}`}
+              className={`pointer-events-auto flex w-full max-w-sm flex-col gap-3 rounded-xl border px-4 py-4 shadow-[0_8px_32px_rgba(0,0,0,0.45)] backdrop-blur-md ${playbackAccentClass}`}
             >
               <p className="text-18 leading-relaxed">
                 {playbackStatusDetail}
@@ -109,7 +109,7 @@ export function VideoPlayer({
                 <div className="flex justify-end">
                   <button
                     type="button"
-                    className="rounded-lg border border-[var(--color-edge-strong)] bg-white/[0.04] px-3 py-1.5 text-16 font-semibold text-[var(--color-app-fg)] transition-colors hover:border-[var(--color-faint)] hover:bg-white/[0.08] focus-visible:outline-none focus-visible:border-[var(--color-accent)]"
+                    className="rounded-lg border border-[var(--color-edge-strong)] bg-white/[0.04] px-3 py-1.5 text-16 font-semibold text-[var(--color-app-fg)] transition-colors hover:border-[var(--color-faint)] hover:bg-white/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
                     onClick={onRetryPlayback}
                   >
                     Retry now
@@ -124,7 +124,7 @@ export function VideoPlayer({
         >
           <button
             type="button"
-            className="inline-flex h-8 w-8 items-center justify-center rounded-full text-[var(--color-muted)] transition-colors hover:bg-white/[0.06] hover:text-[var(--color-accent)] focus-visible:outline-none focus-visible:text-[var(--color-accent)]"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-full text-[var(--color-muted)] transition-colors hover:bg-white/[0.06] hover:text-[var(--color-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
             onClick={onToggleMute}
             aria-label={isMuted ? 'Unmute' : 'Mute'}
           >
@@ -149,7 +149,7 @@ export function VideoPlayer({
           />
           <button
             type="button"
-            className="inline-flex h-8 w-8 items-center justify-center rounded-full text-[var(--color-muted)] transition-colors hover:bg-white/[0.06] hover:text-[var(--color-accent)] focus-visible:outline-none focus-visible:text-[var(--color-accent)]"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-full text-[var(--color-muted)] transition-colors hover:bg-white/[0.06] hover:text-[var(--color-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
             onClick={onFullscreen}
             aria-label="Toggle fullscreen"
           >

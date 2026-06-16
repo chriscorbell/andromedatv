@@ -105,7 +105,7 @@ export function ChatMessageList({
           {onAdminAction && (
             <button
               type="button"
-              className="inline-flex h-5 w-5 shrink-0 items-center justify-center text-[var(--color-faint)] opacity-0 transition hover:text-[var(--color-app-fg)] focus-visible:opacity-100 group-hover:opacity-100 cursor-pointer"
+              className="inline-flex h-5 w-5 shrink-0 items-center justify-center text-[var(--color-faint)] opacity-0 transition hover:text-[var(--color-app-fg)] focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-accent/50 group-hover:opacity-100 cursor-pointer"
               aria-label="Message admin actions"
               onClick={() => onAdminAction(entry.id, entry.nickname)}
             >

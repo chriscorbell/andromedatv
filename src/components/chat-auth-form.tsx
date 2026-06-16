@@ -179,7 +179,7 @@ export function ChatAuthForm({
                   <button
                     type="button"
                     onClick={() => openForm('register')}
-                    className="h-10 flex-1 rounded-lg border border-[var(--color-edge)] text-18 font-bold text-[var(--color-app-fg)] transition hover:bg-white/[0.04] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+                    className="h-10 flex-1 rounded-lg border border-[var(--color-edge)] text-18 font-bold text-[var(--color-app-fg)] transition hover:bg-white/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
                   >
                     Create Account
                   </button>

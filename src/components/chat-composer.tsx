@@ -84,7 +84,7 @@ export function ChatComposer({
         </span>
         <button
           type="button"
-          className="shrink-0 rounded-md border border-[var(--color-edge)] px-1 py-0.5 text-15 text-[var(--color-faint)] font-bold transition-colors hover:border-[var(--color-faint)] hover:text-[var(--color-app-fg)] focus-visible:outline-none focus-visible:border-[var(--color-faint)] focus-visible:text-[var(--color-app-fg)] cursor-pointer"
+          className="shrink-0 rounded-lg border border-[var(--color-edge)] px-1 py-0.5 text-15 text-[var(--color-faint)] font-bold transition-colors hover:border-[var(--color-faint)] hover:text-[var(--color-app-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 cursor-pointer"
           onClick={onSignOut}
         >
           Log Out
@@ -94,7 +94,7 @@ export function ChatComposer({
             {chatNotice && (
               <div
                 id={noticeId}
-                className="rounded-md border border-accent-red/30 bg-danger-surface/92 px-2 py-1 text-15 leading-snug text-accent-red"
+                className="rounded-lg border border-accent-red/30 bg-danger-surface/92 px-2 py-1 text-15 leading-snug text-accent-red"
                 role="status"
                 aria-live="polite"
               >
@@ -104,7 +104,7 @@ export function ChatComposer({
             {chatLoading && (
               <div
                 id={loadingId}
-                className="rounded-md border border-[var(--color-edge)] bg-overlay/92 px-2 py-1 text-15 leading-snug text-[var(--color-faint)]"
+                className="rounded-lg border border-[var(--color-edge)] bg-overlay/92 px-2 py-1 text-15 leading-snug text-[var(--color-faint)]"
                 role="status"
                 aria-live="polite"
               >
@@ -114,7 +114,7 @@ export function ChatComposer({
             {messageStatus && (
               <div
                 id={messageStatusId}
-                className="rounded-md border border-[var(--color-edge)] bg-overlay/92 px-2 py-1 text-15 leading-snug text-[var(--color-muted)]"
+                className="rounded-lg border border-[var(--color-edge)] bg-overlay/92 px-2 py-1 text-15 leading-snug text-[var(--color-muted)]"
                 role="status"
                 aria-live="polite"
               >
@@ -124,7 +124,7 @@ export function ChatComposer({
             {chatError && (
               <div
                 id={errorId}
-                className="rounded-md border border-accent-red/30 bg-danger-surface/92 px-2 py-1 text-15 leading-snug text-accent-red"
+                className="rounded-lg border border-accent-red/30 bg-danger-surface/92 px-2 py-1 text-15 leading-snug text-accent-red"
                 role="alert"
               >
                 {chatError}
@@ -188,7 +188,7 @@ export function ChatComposer({
         <button
           type="submit"
           disabled={composerDisabled}
-          className="inline-flex h-9 shrink-0 items-center rounded-[9px] bg-accent px-5 text-18 font-extrabold text-[var(--color-acc-ink)] transition hover:brightness-105 active:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 disabled:cursor-not-allowed disabled:opacity-50"
+          className="inline-flex h-9 shrink-0 items-center rounded-lg bg-accent px-5 text-18 font-extrabold text-[var(--color-acc-ink)] transition hover:brightness-105 active:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {messageSending ? 'Sending…' : 'Send'}
         </button>
