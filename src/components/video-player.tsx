@@ -48,8 +48,8 @@ export function VideoPlayer({
   const canRetryPlayback = playbackState !== 'connecting'
   const playbackAccentClass =
     playbackState === 'offline'
-      ? 'border-[rgba(247,118,142,0.4)] bg-[rgba(20,12,14,0.92)] text-[var(--color-accent-red)]'
-      : 'border-[var(--color-edge-strong)] bg-[rgba(14,15,17,0.86)] text-[var(--color-app-fg)]'
+      ? 'border-accent-red/40 bg-danger-surface/92 text-accent-red'
+      : 'border-[var(--color-edge-strong)] bg-pane/86 text-[var(--color-app-fg)]'
   const playbackRole = playbackState === 'offline' ? 'alert' : 'status'
 
   useEffect(() => {
@@ -102,14 +102,14 @@ export function VideoPlayer({
               aria-live={playbackState === 'offline' ? 'assertive' : 'polite'}
               className={`pointer-events-auto flex w-full max-w-sm flex-col gap-3 rounded-2xl border px-4 py-4 shadow-[0_8px_32px_rgba(0,0,0,0.45)] backdrop-blur-md ${playbackAccentClass}`}
             >
-              <p className="text-[0.875rem] leading-relaxed">
+              <p className="text-18 leading-relaxed">
                 {playbackStatusDetail}
               </p>
               {canRetryPlayback && (
                 <div className="flex justify-end">
                   <button
                     type="button"
-                    className="rounded-lg border border-[var(--color-edge-strong)] bg-white/[0.04] px-3 py-1.5 text-[0.75rem] font-semibold text-[var(--color-app-fg)] transition-colors hover:border-[var(--color-faint)] hover:bg-white/[0.08] focus-visible:outline-none focus-visible:border-[var(--color-accent)]"
+                    className="rounded-lg border border-[var(--color-edge-strong)] bg-white/[0.04] px-3 py-1.5 text-16 font-semibold text-[var(--color-app-fg)] transition-colors hover:border-[var(--color-faint)] hover:bg-white/[0.08] focus-visible:outline-none focus-visible:border-[var(--color-accent)]"
                     onClick={onRetryPlayback}
                   >
                     Retry now
@@ -120,7 +120,7 @@ export function VideoPlayer({
           </div>
         )}
         <div
-          className={`absolute bottom-3 right-3 flex items-center gap-1.5 rounded-full border border-[var(--color-edge-strong)] bg-[rgba(14,15,17,0.82)] px-2 py-1.5 shadow-lg shadow-black/40 backdrop-blur-md transition-[opacity,transform] duration-200 ${controlsVisible ? 'pointer-events-auto translate-y-0 opacity-100' : 'pointer-events-none translate-y-1 opacity-0'}`}
+          className={`absolute bottom-3 right-3 flex items-center gap-1.5 rounded-full border border-[var(--color-edge-strong)] bg-pane/82 px-2 py-1.5 shadow-lg shadow-black/40 backdrop-blur-md transition-[opacity,transform] duration-200 ${controlsVisible ? 'pointer-events-auto translate-y-0 opacity-100' : 'pointer-events-none translate-y-1 opacity-0'}`}
         >
           <button
             type="button"
@@ -129,9 +129,9 @@ export function VideoPlayer({
             aria-label={isMuted ? 'Unmute' : 'Mute'}
           >
             {isMuted ? (
-              <FontAwesomeIcon icon={faVolumeXmark} className="text-[15px]" />
+              <FontAwesomeIcon icon={faVolumeXmark} className="text-15" />
             ) : (
-              <FontAwesomeIcon icon={faVolumeHigh} className="text-[15px]" />
+              <FontAwesomeIcon icon={faVolumeHigh} className="text-15" />
             )}
           </button>
           <input
@@ -153,7 +153,7 @@ export function VideoPlayer({
             onClick={onFullscreen}
             aria-label="Toggle fullscreen"
           >
-            <FontAwesomeIcon icon={faExpand} className="text-[15px]" />
+            <FontAwesomeIcon icon={faExpand} className="text-15" />
           </button>
         </div>
       </div>

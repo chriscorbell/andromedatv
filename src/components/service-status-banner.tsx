@@ -53,21 +53,21 @@ const STATUS_CONFIG: Record<
 }
 
 const TONE_CARD: Record<StatusTone, string> = {
-  accent: 'border-[rgba(31,214,166,0.22)] bg-[rgba(31,214,166,0.06)]',
-  amber: 'border-[rgba(245,158,11,0.22)] bg-[rgba(245,158,11,0.06)]',
-  red: 'border-[rgba(247,118,142,0.22)] bg-[rgba(247,118,142,0.06)]',
+  accent: 'border-accent/22 bg-accent/6',
+  amber: 'border-warning/22 bg-warning/6',
+  red: 'border-accent-red/22 bg-accent-red/6',
 }
 
 const TONE_MARK: Record<StatusTone, string> = {
-  accent: 'bg-[rgba(31,214,166,0.12)] text-[var(--color-accent)]',
-  amber: 'bg-[rgba(245,158,11,0.13)] text-[#f3b765]',
-  red: 'bg-[rgba(247,118,142,0.12)] text-[var(--color-accent-red)]',
+  accent: 'bg-accent/12 text-accent',
+  amber: 'bg-warning/13 text-warning-text',
+  red: 'bg-accent-red/12 text-accent-red',
 }
 
 const TONE_TITLE: Record<StatusTone, string> = {
-  accent: 'text-[var(--color-accent)]',
-  amber: 'text-[#f3b765]',
-  red: 'text-[var(--color-accent-red)]',
+  accent: 'text-accent',
+  amber: 'text-warning-text',
+  red: 'text-accent-red',
 }
 
 export function ServiceStatusBanner({
@@ -81,10 +81,10 @@ export function ServiceStatusBanner({
     <div
       role={state === 'offline' ? 'alert' : 'status'}
       aria-live={state === 'offline' ? 'assertive' : 'polite'}
-      className={`mx-3 mb-2 mt-1 flex shrink-0 items-center gap-3 rounded-xl border px-3 py-2 text-[0.75rem] ${TONE_CARD[tone]}`}
+      className={`mx-3 mb-2 mt-1 flex shrink-0 items-center gap-3 rounded-xl border px-3 py-2 text-16 ${TONE_CARD[tone]}`}
     >
       <span
-        className={`grid h-7 w-7 shrink-0 place-items-center rounded-lg text-[0.6875rem] ${TONE_MARK[tone]}`}
+        className={`grid h-7 w-7 shrink-0 place-items-center rounded-lg text-15 ${TONE_MARK[tone]}`}
         aria-hidden="true"
       >
         <FontAwesomeIcon icon={icon} spin={spin} />
@@ -94,7 +94,7 @@ export function ServiceStatusBanner({
         <span className={`font-semibold ${TONE_TITLE[tone]}`}>
           {label} {title.toLowerCase()}
         </span>
-        <p className="mt-0.5 text-[0.6875rem] leading-snug text-[var(--color-muted)]">
+        <p className="mt-0.5 text-15 leading-snug text-[var(--color-muted)]">
           {detail}
         </p>
       </div>

@@ -75,7 +75,7 @@ export function ChatComposer({
     >
       {/* Transient toasts (sent, cooldown, errors) sit on the right of the
           identity row so they never overlap the chat list above. */}
-      <div className="mb-3 flex items-center gap-3 text-[0.8rem] text-[var(--color-muted)]">
+      <div className="mb-3 flex items-center gap-3 text-16 text-[var(--color-muted)]">
         <span className="shrink-0">
           Logged in as{' '}
           <span className="font-bold text-[var(--color-app-fg)]">
@@ -84,7 +84,7 @@ export function ChatComposer({
         </span>
         <button
           type="button"
-          className="shrink-0 rounded-md border border-[var(--color-edge)] px-1 py-0.5 text-[0.7rem] text-[var(--color-faint)] font-bold transition-colors hover:border-[var(--color-faint)] hover:text-[var(--color-app-fg)] focus-visible:outline-none focus-visible:border-[var(--color-faint)] focus-visible:text-[var(--color-app-fg)] cursor-pointer"
+          className="shrink-0 rounded-md border border-[var(--color-edge)] px-1 py-0.5 text-15 text-[var(--color-faint)] font-bold transition-colors hover:border-[var(--color-faint)] hover:text-[var(--color-app-fg)] focus-visible:outline-none focus-visible:border-[var(--color-faint)] focus-visible:text-[var(--color-app-fg)] cursor-pointer"
           onClick={onSignOut}
         >
           Log Out
@@ -94,7 +94,7 @@ export function ChatComposer({
             {chatNotice && (
               <div
                 id={noticeId}
-                className="rounded-md border border-[rgba(247,118,142,0.3)] bg-[rgba(20,12,14,0.92)] px-2 py-1 text-[0.7rem] leading-snug text-[var(--color-accent-red)]"
+                className="rounded-md border border-accent-red/30 bg-danger-surface/92 px-2 py-1 text-15 leading-snug text-accent-red"
                 role="status"
                 aria-live="polite"
               >
@@ -104,7 +104,7 @@ export function ChatComposer({
             {chatLoading && (
               <div
                 id={loadingId}
-                className="rounded-md border border-[var(--color-edge)] bg-[rgba(16,17,19,0.92)] px-2 py-1 text-[0.7rem] leading-snug text-[var(--color-faint)]"
+                className="rounded-md border border-[var(--color-edge)] bg-overlay/92 px-2 py-1 text-15 leading-snug text-[var(--color-faint)]"
                 role="status"
                 aria-live="polite"
               >
@@ -114,7 +114,7 @@ export function ChatComposer({
             {messageStatus && (
               <div
                 id={messageStatusId}
-                className="rounded-md border border-[var(--color-edge)] bg-[rgba(16,17,19,0.92)] px-2 py-1 text-[0.7rem] leading-snug text-[var(--color-muted)]"
+                className="rounded-md border border-[var(--color-edge)] bg-overlay/92 px-2 py-1 text-15 leading-snug text-[var(--color-muted)]"
                 role="status"
                 aria-live="polite"
               >
@@ -124,7 +124,7 @@ export function ChatComposer({
             {chatError && (
               <div
                 id={errorId}
-                className="rounded-md border border-[rgba(247,118,142,0.3)] bg-[rgba(20,12,14,0.92)] px-2 py-1 text-[0.7rem] leading-snug text-[var(--color-accent-red)]"
+                className="rounded-md border border-accent-red/30 bg-danger-surface/92 px-2 py-1 text-15 leading-snug text-accent-red"
                 role="alert"
               >
                 {chatError}
@@ -137,7 +137,7 @@ export function ChatComposer({
         )}
       </div>
 
-      <div className="flex items-end gap-2.5 rounded-xl border border-[var(--color-edge)] bg-[var(--color-raised2)] py-2 pl-3.5 pr-2 transition-colors focus-within:border-[rgba(31,214,166,0.5)]">
+      <div className="flex items-end gap-2.5 rounded-xl border border-[var(--color-edge)] bg-[var(--color-raised2)] py-2 pl-3.5 pr-2 transition-colors focus-within:border-accent/50">
         <label htmlFor={messageId} className="sr-only">
           Chat message
         </label>
@@ -183,12 +183,12 @@ export function ChatComposer({
           rows={1}
           aria-invalid={Boolean(chatError)}
           aria-describedby={describedBy}
-          className="max-h-40 min-h-6 flex-1 resize-none overflow-hidden bg-transparent py-1 text-[0.9rem] leading-6 text-[var(--color-app-fg)] placeholder:text-[var(--color-faint)] focus:outline-none disabled:opacity-60"
+          className="max-h-40 min-h-6 flex-1 resize-none overflow-hidden bg-transparent py-1 text-18 leading-6 text-[var(--color-app-fg)] placeholder:text-[var(--color-faint)] focus:outline-none disabled:opacity-60"
         />
         <button
           type="submit"
           disabled={composerDisabled}
-          className="inline-flex h-9 shrink-0 items-center rounded-[9px] bg-[var(--color-accent)] px-5 text-[0.875rem] font-extrabold text-[var(--color-acc-ink)] transition hover:brightness-105 active:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(31,214,166,0.5)] disabled:cursor-not-allowed disabled:opacity-50"
+          className="inline-flex h-9 shrink-0 items-center rounded-[9px] bg-accent px-5 text-18 font-extrabold text-[var(--color-acc-ink)] transition hover:brightness-105 active:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {messageSending ? 'Sending…' : 'Send'}
         </button>

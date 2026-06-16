@@ -141,7 +141,7 @@ function MainApp() {
                   onClick={openAdminMenu}
                   aria-label="Open admin menu"
                 >
-                  <FontAwesomeIcon icon={faShield} className="text-[15px]" />
+                  <FontAwesomeIcon icon={faShield} className="text-15" />
                 </button>
               )}
               <button
@@ -150,7 +150,7 @@ function MainApp() {
                 onClick={openInfo}
                 aria-label="About Andromeda"
               >
-                <FontAwesomeIcon icon={faCircleInfo} className="text-[17px]" />
+                <FontAwesomeIcon icon={faCircleInfo} className="text-18" />
               </button>
             </div>
           </header>

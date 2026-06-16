@@ -142,7 +142,7 @@ export function SchedulePanel({
                     <span className="flex w-3 shrink-0 items-center justify-center">
                       <FontAwesomeIcon
                         icon={faChevronDown}
-                        className="schedule-chevron text-[11px]"
+                        className="schedule-chevron text-11"
                       />
                     </span>
                   )}

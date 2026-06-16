@@ -34,7 +34,7 @@ export function AboutModal({
             onClick={onClose}
             aria-label="Close info"
           >
-            <FontAwesomeIcon icon={faXmark} className="text-[16px]" />
+            <FontAwesomeIcon icon={faXmark} className="text-16" />
           </button>
         </div>
         <div>
@@ -60,7 +60,7 @@ export function AboutModal({
               title="view on github"
               className="inline-flex items-center text-[var(--color-accent)] underline decoration-dashed underline-offset-4 transition hover:text-[var(--color-accent-strong)]"
             >
-              <FontAwesomeIcon icon={faGithub} className="text-[20px]" />
+              <FontAwesomeIcon icon={faGithub} className="text-20" />
             </a>
           </p>
         </div>

@@ -19,6 +19,10 @@
   --color-accent-strong: #2ee3b1;
   --color-accent-violet: #a78bfa;
   --color-accent-red: #f7768e;
+  /* Warning/amber state (status "delayed"). `warning` is the base used for
+     translucent fills/borders; `warning-text` is the lighter readable tint. */
+  --color-warning: #f59e0b;
+  --color-warning-text: #f3b765;
   --color-edge: rgba(255, 255, 255, 0.07);
   --color-edge-strong: rgba(255, 255, 255, 0.09);
 
@@ -29,6 +33,20 @@
   --color-raised2: #202329;
   --color-acc-ink: #04130d;
   --color-acc-tint: rgba(31, 214, 166, 0.1);
+  /* Translucent overlay surfaces for floating chrome (toasts, popovers). */
+  --color-overlay: #101113;
+  --color-danger-surface: #140c0e;
+
+  /* Type scale (rendered px). One shared ladder for all component text and
+     icon sizing, replacing ad-hoc text-[..] values. Numeric names sidestep
+     Tailwind's default t-shirt sizes so these set font-size only (no coupled
+     line-height); element line-heights stay controlled by leading-* utilities. */
+  --text-11: 11px;
+  --text-13: 13px;
+  --text-15: 15px;
+  --text-16: 16px;
+  --text-18: 18px;
+  --text-20: 20px;
 }
 
 @layer base {

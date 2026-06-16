@@ -125,7 +125,7 @@ export function ChatAuthForm({
   const chatErrorBanner = chatError ? (
     <div
       id={statusId}
-      className={`rounded-lg border border-[rgba(31,214,166,0.3)] bg-[var(--color-acc-tint)] px-3 py-2 text-[0.825rem] text-[var(--color-app-fg)] ${stagger[1]}`}
+      className={`rounded-lg border border-accent/30 bg-[var(--color-acc-tint)] px-3 py-2 text-18 text-[var(--color-app-fg)] ${stagger[1]}`}
       role="status"
       aria-live="polite"
     >
@@ -134,7 +134,7 @@ export function ChatAuthForm({
   ) : null
 
   const inputClasses =
-    'h-11 w-full rounded-lg border border-[var(--color-edge)] bg-[var(--color-raised2)] pl-10 pr-3 text-[0.9rem] text-[var(--color-app-fg)] placeholder:text-[var(--color-faint)] transition focus:border-[rgba(31,214,166,0.5)] focus:outline-none disabled:opacity-60'
+    'h-11 w-full rounded-lg border border-[var(--color-edge)] bg-[var(--color-raised2)] pl-10 pr-3 text-18 text-[var(--color-app-fg)] placeholder:text-[var(--color-faint)] transition focus:border-accent/50 focus:outline-none disabled:opacity-60'
 
   return (
     <form
@@ -158,10 +158,10 @@ export function ChatAuthForm({
             {!showForm ? (
               <>
                 <div className={stagger[0]}>
-                  <div className="text-[0.95rem] font-bold text-[var(--color-app-fg)]">
+                  <div className="text-20 font-bold text-[var(--color-app-fg)]">
                     Join the conversation.
                   </div>
-                  <p className="mt-0.5 text-[0.825rem] text-[var(--color-muted)]">
+                  <p className="mt-0.5 text-18 text-[var(--color-muted)]">
                     Log in to chat. No email or verification needed.
                   </p>
                 </div>
@@ -172,14 +172,14 @@ export function ChatAuthForm({
                   <button
                     type="button"
                     onClick={() => openForm('login')}
-                    className="h-10 flex-1 rounded-lg bg-[var(--color-accent)] text-[0.875rem] font-bold text-[var(--color-acc-ink)] transition hover:brightness-105 active:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(31,214,166,0.5)]"
+                    className="h-10 flex-1 rounded-lg bg-accent text-18 font-bold text-[var(--color-acc-ink)] transition hover:brightness-105 active:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
                   >
                     Log In
                   </button>
                   <button
                     type="button"
                     onClick={() => openForm('register')}
-                    className="h-10 flex-1 rounded-lg border border-[var(--color-edge)] text-[0.875rem] font-bold text-[var(--color-app-fg)] transition hover:bg-white/[0.04] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(31,214,166,0.5)]"
+                    className="h-10 flex-1 rounded-lg border border-[var(--color-edge)] text-18 font-bold text-[var(--color-app-fg)] transition hover:bg-white/[0.04] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
                   >
                     Create Account
                   </button>
@@ -194,9 +194,9 @@ export function ChatAuthForm({
                     aria-label="Back"
                     className="info-btn -ml-1 inline-flex h-7 w-7 items-center justify-center cursor-pointer"
                   >
-                    <FontAwesomeIcon icon={faChevronLeft} className="text-[14px]" />
+                    <FontAwesomeIcon icon={faChevronLeft} className="text-15" />
                   </button>
-                  <div className="text-[0.95rem] font-bold text-[var(--color-app-fg)]">
+                  <div className="text-20 font-bold text-[var(--color-app-fg)]">
                     <span key={authMode} className={swap}>
                       {authMode === 'login' ? 'Log In' : 'Create Account'}
                     </span>
@@ -211,7 +211,7 @@ export function ChatAuthForm({
                       Username
                     </label>
                     <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--color-faint)] transition-colors group-focus-within:text-[var(--color-accent)]">
-                      <FontAwesomeIcon icon={faUser} className="text-[15px]" />
+                      <FontAwesomeIcon icon={faUser} className="text-15" />
                     </span>
                     <input
                       id={nicknameId}
@@ -230,7 +230,7 @@ export function ChatAuthForm({
                       Password
                     </label>
                     <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--color-faint)] transition-colors group-focus-within:text-[var(--color-accent)]">
-                      <FontAwesomeIcon icon={faLock} className="text-[15px]" />
+                      <FontAwesomeIcon icon={faLock} className="text-15" />
                     </span>
                     <input
                       id={passwordId}
@@ -251,7 +251,7 @@ export function ChatAuthForm({
 
                 <button
                   type="submit"
-                  className={`h-11 rounded-lg bg-[var(--color-accent)] text-[0.9rem] font-extrabold text-[var(--color-acc-ink)] transition hover:brightness-105 active:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(31,214,166,0.5)] disabled:cursor-not-allowed disabled:opacity-60 ${stagger[2]}`}
+                  className={`h-11 rounded-lg bg-accent text-18 font-extrabold text-[var(--color-acc-ink)] transition hover:brightness-105 active:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 disabled:cursor-not-allowed disabled:opacity-60 ${stagger[2]}`}
                   disabled={authLoading}
                 >
                   <span key={authMode} className={swap}>
@@ -266,7 +266,7 @@ export function ChatAuthForm({
                 {authLoading && (
                   <div
                     id={authStatusId}
-                    className={`rounded-lg border border-[var(--color-edge)] bg-[var(--color-raised2)] px-3 py-2 text-[0.825rem] text-[var(--color-muted)] ${revealNow}`}
+                    className={`rounded-lg border border-[var(--color-edge)] bg-[var(--color-raised2)] px-3 py-2 text-18 text-[var(--color-muted)] ${revealNow}`}
                     role="status"
                     aria-live="polite"
                   >
@@ -276,14 +276,14 @@ export function ChatAuthForm({
                 {authError && (
                   <div
                     id={errorId}
-                    className={`rounded-lg border border-[rgba(247,118,142,0.3)] bg-[rgba(247,118,142,0.1)] px-3 py-2 text-[0.825rem] text-[var(--color-accent-red)] ${revealNow}`}
+                    className={`rounded-lg border border-accent-red/30 bg-accent-red/10 px-3 py-2 text-18 text-accent-red ${revealNow}`}
                     role="alert"
                   >
                     {authError}
                   </div>
                 )}
                 {chatLoading && (
-                  <div className="text-[0.825rem] text-[var(--color-faint)]" role="status" aria-live="polite">
+                  <div className="text-18 text-[var(--color-faint)]" role="status" aria-live="polite">
                     loading recent chat…
                   </div>
                 )}
@@ -294,7 +294,7 @@ export function ChatAuthForm({
                     selectMode(authMode === 'login' ? 'register' : 'login')
                   }
                   disabled={authLoading}
-                  className={`group self-start text-[0.8rem] text-[var(--color-muted)] disabled:opacity-60 focus-visible:outline-none ${stagger[3]}`}
+                  className={`group self-start text-16 text-[var(--color-muted)] disabled:opacity-60 focus-visible:outline-none ${stagger[3]}`}
                 >
                   <span key={authMode} className={swap}>
                     {authMode === 'login' ? (

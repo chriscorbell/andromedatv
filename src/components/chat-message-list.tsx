@@ -63,7 +63,7 @@ export function ChatMessageList({
   return (
     <ul className="flex flex-col gap-2.5 px-5 pt-2 pb-3.5">
       {messages.length === 0 && !loading && (
-        <li className="py-4 text-[0.875rem] text-[var(--color-faint)]">
+        <li className="py-4 text-18 text-[var(--color-faint)]">
           No messages yet.
         </li>
       )}
@@ -72,7 +72,7 @@ export function ChatMessageList({
           key={`${entry.id}`}
           className="group flex items-start gap-2 animate-[fadeIn_220ms_ease-out] motion-reduce:animate-none"
         >
-          <div className="min-w-0 flex-1 text-[0.875rem] leading-[1.4] [overflow-wrap:anywhere]">
+          <div className="min-w-0 flex-1 text-18 leading-[1.4] [overflow-wrap:anywhere]">
             {(() => {
               const nicknameColor = getNicknameColor(entry)
               return (
@@ -85,7 +85,7 @@ export function ChatMessageList({
                   {entry.is_admin && (
                     <FontAwesomeIcon
                       icon={faShield}
-                      className="mr-1.5 text-[13px] text-[var(--color-accent)]"
+                      className="mr-1.5 text-13 text-[var(--color-accent)]"
                       title="Admin"
                     />
                   )}
@@ -109,7 +109,7 @@ export function ChatMessageList({
               aria-label="Message admin actions"
               onClick={() => onAdminAction(entry.id, entry.nickname)}
             >
-              <FontAwesomeIcon icon={faEllipsisVertical} className="text-[15px]" />
+              <FontAwesomeIcon icon={faEllipsisVertical} className="text-15" />
             </button>
           )}
         </li>
