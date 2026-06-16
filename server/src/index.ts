@@ -6,13 +6,15 @@ import { initDb } from "./db";
 import { createJellyfinYearProvider } from "./lib/jellyfin";
 
 const PORT = Number(process.env.PORT || 3001);
-const CORS_ORIGIN = process.env.CORS_ORIGIN || "*";
+const CORS_ORIGIN = process.env.CORS_ORIGIN || "";
 const ERSATZTV_BASE_URL = process.env.ERSATZTV_BASE_URL || "";
 const JELLYFIN_BASE_URL = process.env.JELLYFIN_BASE_URL || "";
 const JELLYFIN_API_KEY = process.env.JELLYFIN_API_KEY || "";
 const PUBLIC_APP_ORIGIN = process.env.PUBLIC_APP_ORIGIN || "";
 const STATUS_API_MODE = process.env.STATUS_API_MODE || "admin";
 const TRUST_PROXY = process.env.TRUST_PROXY || "";
+const MAX_STREAM_CLIENTS = process.env.MAX_STREAM_CLIENTS || "";
+const MAX_STREAM_CLIENTS_PER_IP = process.env.MAX_STREAM_CLIENTS_PER_IP || "";
 const DB_PATH =
     process.env.DB_PATH ||
     path.resolve(__dirname, "..", "data", "andromeda.db");
@@ -39,6 +41,20 @@ function parseStatusApiMode(value: string): "public" | "admin" | "disabled" {
     }
 
     throw new Error('STATUS_API_MODE must be "public", "admin", or "disabled"');
+}
+
+function parsePositiveInt(value: string, fallback: number, name: string): number {
+    const trimmed = value.trim();
+    if (!trimmed) {
+        return fallback;
+    }
+
+    const numeric = Number(trimmed);
+    if (Number.isInteger(numeric) && numeric > 0) {
+        return numeric;
+    }
+
+    throw new Error(`${name} must be a positive integer`);
 }
 
 function parseTrustProxy(value: string): boolean | number | string | undefined {
@@ -93,6 +109,16 @@ async function main() {
     const publicAppOrigin = normalizePublicAppOrigin(PUBLIC_APP_ORIGIN);
     const statusApiMode = parseStatusApiMode(STATUS_API_MODE);
     const trustProxy = parseTrustProxy(TRUST_PROXY);
+    const maxStreamClients = parsePositiveInt(
+        MAX_STREAM_CLIENTS,
+        1000,
+        "MAX_STREAM_CLIENTS"
+    );
+    const maxStreamClientsPerIp = parsePositiveInt(
+        MAX_STREAM_CLIENTS_PER_IP,
+        20,
+        "MAX_STREAM_CLIENTS_PER_IP"
+    );
     const yearProvider =
         JELLYFIN_BASE_URL && JELLYFIN_API_KEY
             ? createJellyfinYearProvider({
@@ -108,6 +134,8 @@ async function main() {
         jwtSecret,
         publicAppOrigin,
         yearProvider,
+        maxStreamClients,
+        maxStreamClientsPerIp,
         statusApiMode,
         staticDir: STATIC_DIR,
         trustProxy,
@@ -117,7 +145,13 @@ async function main() {
         console.log(`andromeda app listening on ${PORT}`);
     });
 
-    server.requestTimeout = 0;
+    // Bound how long a client may take to send a full request (slowloris), while
+    // leaving the socket-inactivity timeout off so long-lived SSE chat streams
+    // are not killed (their request completes immediately; only the response is
+    // held open, and the SSE handlers also opt their sockets out explicitly).
+    // headersTimeout stays just above keepAliveTimeout to avoid the proxy/LB
+    // keep-alive race, and requestTimeout sits above headersTimeout.
+    server.requestTimeout = 120_000;
     server.timeout = 0;
     server.keepAliveTimeout = 75_000;
     server.headersTimeout = 90_000;

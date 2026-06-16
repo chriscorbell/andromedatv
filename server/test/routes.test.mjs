@@ -132,6 +132,180 @@ test("cookie-authenticated sessions can access protected chat routes without bea
     }
 });
 
+test("login is rate limited per IP after repeated failed attempts", async () => {
+    // trust proxy + a fixed X-Forwarded-For pins req.ip deterministically;
+    // otherwise supertest's loopback address can vary between requests and
+    // split the per-IP counter.
+    const context = await createTestContext({ trustProxy: true });
+    const clientIp = "203.0.113.7";
+
+    try {
+        for (let attempt = 0; attempt < 10; attempt += 1) {
+            const response = await request(context.app)
+                .post("/api/chat/auth/login")
+                .set("X-Forwarded-For", clientIp)
+                .send({ nickname: "ghostuser", password: "wrongpass" });
+
+            assert.equal(response.status, 401);
+        }
+
+        const blocked = await request(context.app)
+            .post("/api/chat/auth/login")
+            .set("X-Forwarded-For", clientIp)
+            .send({ nickname: "ghostuser", password: "wrongpass" });
+
+        assert.equal(blocked.status, 429);
+        assert.ok(blocked.body.retryAfterSeconds > 0);
+        assert.ok(blocked.headers["retry-after"]);
+    } finally {
+        await context.cleanup();
+    }
+});
+
+test("successful logins do not count against the login rate limit", async () => {
+    const context = await createTestContext();
+
+    try {
+        const agent = request.agent(context.app);
+        await agent
+            .post("/api/chat/auth/register")
+            .send({ nickname: "RepeatUser", password: "hunter2" })
+            .expect(201);
+
+        // Far more successful logins than the failure budget — none should trip
+        // the limiter, because only failed attempts are counted.
+        for (let attempt = 0; attempt < 12; attempt += 1) {
+            const response = await agent
+                .post("/api/chat/auth/login")
+                .send({ nickname: "RepeatUser", password: "hunter2" });
+
+            assert.equal(response.status, 200);
+        }
+    } finally {
+        await context.cleanup();
+    }
+});
+
+test("register is rate limited per IP after the configured number of accounts", async () => {
+    const context = await createTestContext({ trustProxy: true });
+    const clientIp = "203.0.113.8";
+
+    try {
+        for (let attempt = 0; attempt < 5; attempt += 1) {
+            const response = await request(context.app)
+                .post("/api/chat/auth/register")
+                .set("X-Forwarded-For", clientIp)
+                .send({ nickname: `signup_${attempt}`, password: "hunter2" });
+
+            assert.equal(response.status, 201);
+        }
+
+        const blocked = await request(context.app)
+            .post("/api/chat/auth/register")
+            .set("X-Forwarded-For", clientIp)
+            .send({ nickname: "signup_blocked", password: "hunter2" });
+
+        assert.equal(blocked.status, 429);
+        assert.ok(blocked.body.retryAfterSeconds > 0);
+        assert.ok(blocked.headers["retry-after"]);
+    } finally {
+        await context.cleanup();
+    }
+});
+
+test("default CORS does not grant cross-origin access", async () => {
+    const context = await createTestContext({ corsOrigin: "" });
+
+    try {
+        const response = await request(context.app)
+            .get("/api/chat/health")
+            .set("Origin", "https://evil.example");
+
+        assert.equal(response.status, 200);
+        assert.equal(response.headers["access-control-allow-origin"], undefined);
+        assert.equal(response.headers["access-control-allow-credentials"], undefined);
+    } finally {
+        await context.cleanup();
+    }
+});
+
+test("an explicit CORS origin is allowed with credentials, others are not", async () => {
+    const context = await createTestContext({ corsOrigin: "https://app.example" });
+
+    try {
+        const allowed = await request(context.app)
+            .get("/api/chat/health")
+            .set("Origin", "https://app.example");
+
+        assert.equal(
+            allowed.headers["access-control-allow-origin"],
+            "https://app.example"
+        );
+        assert.equal(allowed.headers["access-control-allow-credentials"], "true");
+
+        const other = await request(context.app)
+            .get("/api/chat/health")
+            .set("Origin", "https://evil.example");
+
+        assert.notEqual(
+            other.headers["access-control-allow-origin"],
+            "https://evil.example"
+        );
+    } finally {
+        await context.cleanup();
+    }
+});
+
+test("wildcard CORS allows any origin but never credentials", async () => {
+    const context = await createTestContext({ corsOrigin: "*" });
+
+    try {
+        const response = await request(context.app)
+            .get("/api/chat/health")
+            .set("Origin", "https://evil.example");
+
+        assert.equal(response.headers["access-control-allow-origin"], "*");
+        assert.equal(response.headers["access-control-allow-credentials"], undefined);
+    } finally {
+        await context.cleanup();
+    }
+});
+
+test("security headers are set on application responses", async () => {
+    const context = await createTestContext();
+
+    try {
+        const response = await request(context.app).get("/health");
+
+        assert.equal(response.status, 200);
+
+        const csp = response.headers["content-security-policy"];
+        assert.ok(csp, "expected a Content-Security-Policy header");
+        assert.match(csp, /default-src 'self'/);
+        assert.match(csp, /frame-ancestors 'none'/);
+        assert.match(csp, /worker-src 'self' blob:/);
+        assert.match(csp, /media-src 'self' blob:/);
+        assert.match(csp, /style-src[^;]*fonts\.googleapis\.com/);
+        assert.match(csp, /font-src[^;]*fonts\.gstatic\.com/);
+
+        assert.equal(response.headers["x-frame-options"], "DENY");
+        assert.equal(response.headers["x-content-type-options"], "nosniff");
+        assert.equal(
+            response.headers["referrer-policy"],
+            "strict-origin-when-cross-origin"
+        );
+        assert.equal(
+            response.headers["cross-origin-opener-policy"],
+            "same-origin"
+        );
+        assert.ok(response.headers["permissions-policy"]);
+        // HSTS is gated on secure requests; supertest speaks plain HTTP here.
+        assert.equal(response.headers["strict-transport-security"], undefined);
+    } finally {
+        await context.cleanup();
+    }
+});
+
 test("status endpoint requires admin authentication by default", async () => {
     const context = await createTestContext();
 
@@ -320,6 +494,133 @@ test("status diagnostics remove disconnected public stream clients", async () =>
     }
 });
 
+test("refuses stream connections beyond the per-IP cap", async () => {
+    const context = await createTestContext({
+        statusApiMode: "public",
+        trustProxy: true,
+        maxStreamClientsPerIp: 2,
+    });
+    const server = http.createServer(context.app);
+    const controllers = [];
+    const headers = { "X-Forwarded-For": "198.51.100.5" };
+
+    try {
+        await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+        const address = server.address();
+        assert.ok(address && typeof address === "object");
+        const base = `http://127.0.0.1:${address.port}`;
+
+        for (let index = 0; index < 2; index += 1) {
+            const controller = new AbortController();
+            controllers.push(controller);
+            const response = await fetch(`${base}/api/chat/messages/public/stream`, {
+                signal: controller.signal,
+                headers,
+            });
+            assert.equal(response.status, 200);
+        }
+
+        const overflow = await fetch(`${base}/api/chat/messages/public/stream`, {
+            headers,
+        });
+        assert.equal(overflow.status, 503);
+        assert.ok(overflow.headers.get("retry-after"));
+        const overflowBody = await overflow.json();
+        assert.match(overflowBody.error, /too many active connections/i);
+
+        await wait(25);
+        const status = await request(context.app).get("/api/status");
+        assert.equal(status.body.chat.publicClients, 2);
+        assert.equal(status.body.chat.activeStreamIps, 1);
+        assert.equal(status.body.chat.lastStreamRejectedReason, "per_ip");
+    } finally {
+        for (const controller of controllers) {
+            controller.abort();
+        }
+        server.closeAllConnections?.();
+        await new Promise((resolve, reject) => {
+            server.close((error) => (error ? reject(error) : resolve()));
+        });
+        await context.cleanup();
+    }
+});
+
+test("refuses stream connections beyond the global cap", async () => {
+    const context = await createTestContext({
+        statusApiMode: "public",
+        maxStreamClients: 2,
+    });
+    const server = http.createServer(context.app);
+    const controllers = [];
+
+    try {
+        await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+        const address = server.address();
+        assert.ok(address && typeof address === "object");
+        const base = `http://127.0.0.1:${address.port}`;
+
+        for (let index = 0; index < 2; index += 1) {
+            const controller = new AbortController();
+            controllers.push(controller);
+            const response = await fetch(`${base}/api/chat/messages/public/stream`, {
+                signal: controller.signal,
+            });
+            assert.equal(response.status, 200);
+        }
+
+        const overflow = await fetch(`${base}/api/chat/messages/public/stream`);
+        assert.equal(overflow.status, 503);
+        await overflow.json();
+
+        await wait(25);
+        const status = await request(context.app).get("/api/status");
+        assert.equal(status.body.chat.lastStreamRejectedReason, "global");
+    } finally {
+        for (const controller of controllers) {
+            controller.abort();
+        }
+        server.closeAllConnections?.();
+        await new Promise((resolve, reject) => {
+            server.close((error) => (error ? reject(error) : resolve()));
+        });
+        await context.cleanup();
+    }
+});
+
+test("a short requestTimeout does not abort a long-lived SSE stream", async () => {
+    const context = await createTestContext({ statusApiMode: "public" });
+    const server = http.createServer(context.app);
+    // Aggressively short timeouts: if requestTimeout aborted held-open responses,
+    // the stream below would be torn down well before the assertion.
+    server.headersTimeout = 400;
+    server.requestTimeout = 500;
+    const controller = new AbortController();
+
+    try {
+        await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+        const address = server.address();
+        assert.ok(address && typeof address === "object");
+        const base = `http://127.0.0.1:${address.port}`;
+
+        const response = await fetch(`${base}/api/chat/messages/public/stream`, {
+            signal: controller.signal,
+        });
+        assert.equal(response.status, 200);
+
+        await wait(900);
+
+        const status = await request(context.app).get("/api/status");
+        assert.equal(status.body.chat.publicClients, 1);
+    } finally {
+        controller.abort();
+        server.closeAllConnections?.();
+        await new Promise((resolve, reject) => {
+            server.close((error) => (error ? reject(error) : resolve()));
+        });
+        await context.cleanup();
+    }
+});
+
 test("playlist rewriting prefers the configured public origin over forwarded headers", async () => {
     const upstream = http.createServer((req, res) => {
         if (req.url !== "/iptv/session/1/hls.m3u8") {
@@ -356,6 +657,14 @@ test("playlist rewriting prefers the configured public origin over forwarded hea
             /https:\/\/stream\.example\.com\/iptv\/session\/1\/hls\.m3u8/
         );
         assert.doesNotMatch(playlistResponse.text, /attacker\.invalid/);
+
+        // The IPTV proxy is left as a clean pass-through, so document-oriented
+        // security headers are not injected onto its media responses.
+        assert.equal(
+            playlistResponse.headers["content-security-policy"],
+            undefined
+        );
+        assert.equal(playlistResponse.headers["x-frame-options"], undefined);
     } finally {
         await new Promise((resolve, reject) => {
             upstream.close((error) => {

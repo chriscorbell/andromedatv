@@ -26,6 +26,15 @@ const RATE_WINDOW_MS = 10_000;
 const COOLDOWN_MS = 60_000;
 const RATE_LIMIT_PRUNE_INTERVAL_MS = 30_000;
 
+// Per-IP throttles on the auth endpoints. These bound password brute-forcing,
+// account flooding, and the bcrypt CPU cost an attacker can trigger (the limit
+// is checked before any bcrypt work runs). Keyed by req.ip, so deployments
+// behind a proxy must set TRUST_PROXY for these to see real client addresses.
+const LOGIN_RATE_LIMIT_MAX = 10;
+const LOGIN_RATE_WINDOW_MS = 15 * 60_000;
+const REGISTER_RATE_LIMIT_MAX = 5;
+const REGISTER_RATE_WINDOW_MS = 60 * 60_000;
+
 const HOP_BY_HOP_HEADERS = new Set([
     "connection",
     "keep-alive",
@@ -37,6 +46,43 @@ const HOP_BY_HOP_HEADERS = new Set([
     "upgrade",
 ]);
 
+// Content Security Policy tuned to what the built SPA actually loads. Everything
+// is same-origin except the Hanken Grotesk web font (Google Fonts), which the
+// stylesheet pulls via @import. The video player needs blob: for MediaSource and
+// for the hls.js transmuxer web worker; HLS segments are proxied via same-origin
+// /iptv. 'unsafe-inline' on style-src covers React style={} attributes and the
+// CSS @fortawesome/fontawesome-svg-core injects at runtime (no inline scripts
+// exist, so script-src stays strict).
+const CONTENT_SECURITY_POLICY = [
+    "default-src 'self'",
+    "base-uri 'self'",
+    "object-src 'none'",
+    "frame-ancestors 'none'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' https://fonts.gstatic.com",
+    "img-src 'self' data:",
+    "media-src 'self' blob:",
+    "worker-src 'self' blob:",
+    "connect-src 'self'",
+    "form-action 'self'",
+].join("; ");
+
+// Disable powerful features the app never uses. fullscreen and autoplay are
+// deliberately omitted so they keep their default self-allowlist for the player.
+const PERMISSIONS_POLICY = [
+    "accelerometer=()",
+    "camera=()",
+    "geolocation=()",
+    "gyroscope=()",
+    "magnetometer=()",
+    "microphone=()",
+    "payment=()",
+    "usb=()",
+].join(", ");
+
+const HSTS_MAX_AGE_SECONDS = 180 * 24 * 60 * 60;
+
 type AuthedRequest = Request & {
     user?: {
         nickname: string;
@@ -45,10 +91,12 @@ type AuthedRequest = Request & {
 };
 
 type PublicStreamClient = {
+    ip: string;
     res: Response;
 };
 
 type PrivateStreamClient = {
+    ip: string;
     nickname: string;
     res: Response;
 };
@@ -89,6 +137,11 @@ export type CreateAppOptions = {
     logger?: Pick<Console, "info" | "warn" | "error">;
     loadSchedulePayload?: ScheduleLoader;
     yearProvider?: JellyfinYearProvider;
+    // Caps on concurrent held-open SSE chat streams. The global cap protects the
+    // server from FD/memory exhaustion; the per-IP cap stops a single source
+    // from consuming the whole budget.
+    maxStreamClients?: number;
+    maxStreamClientsPerIp?: number;
 };
 
 type LogLevel = "info" | "warn" | "error";
@@ -187,6 +240,69 @@ function writeSseEvent(res: Response, event: string, data: unknown) {
     res.write(`data: ${JSON.stringify(data)}\n\n`);
 }
 
+// Sliding-window rate limiter for the auth endpoints, keyed by client IP. Reads
+// are non-mutating (checkIpRateLimit) so callers can decide whether an attempt
+// counts — login only records failures, register records every attempt.
+function checkIpRateLimit(
+    hits: Map<string, number[]>,
+    key: string,
+    maxHits: number,
+    windowMs: number,
+    now: number
+): { allowed: boolean; retryAfterSeconds: number } {
+    const windowStart = now - windowMs;
+    const recent = (hits.get(key) || []).filter((timestamp) => timestamp > windowStart);
+    if (recent.length >= maxHits) {
+        hits.set(key, recent);
+        const retryAfterMs = recent[0] + windowMs - now;
+        return {
+            allowed: false,
+            retryAfterSeconds: Math.max(1, Math.ceil(retryAfterMs / 1000)),
+        };
+    }
+    return { allowed: true, retryAfterSeconds: 0 };
+}
+
+function recordIpRateLimit(hits: Map<string, number[]>, key: string, now: number) {
+    const recent = hits.get(key) || [];
+    recent.push(now);
+    hits.set(key, recent);
+}
+
+function pruneIpRateLimits(hits: Map<string, number[]>, windowMs: number, now: number) {
+    const windowStart = now - windowMs;
+    for (const [key, timestamps] of hits.entries()) {
+        const recent = timestamps.filter((timestamp) => timestamp > windowStart);
+        if (recent.length === 0) {
+            hits.delete(key);
+        } else {
+            hits.set(key, recent);
+        }
+    }
+}
+
+// Resolve the CORS policy for the chat API. The default (no CORS_ORIGIN) is
+// same-origin only — the SPA is served from the same origin, so cross-origin
+// access is never needed by default. Credentials (cookie auth) are enabled only
+// for explicitly listed origins. "*" allows any origin but never with
+// credentials: the CORS spec forbids combining a wildcard with credentials, and
+// reflecting an arbitrary origin into a credentialed response is the footgun we
+// are removing.
+function resolveCorsOptions(corsOrigin: string): Parameters<typeof cors>[0] {
+    const trimmed = corsOrigin.trim();
+    if (!trimmed) {
+        return { origin: false };
+    }
+    if (trimmed === "*") {
+        return { origin: "*", credentials: false };
+    }
+    const origins = trimmed
+        .split(",")
+        .map((origin) => origin.trim())
+        .filter(Boolean);
+    return { origin: origins, credentials: true };
+}
+
 export function createApp(options: CreateAppOptions) {
     const {
         corsOrigin,
@@ -195,6 +311,8 @@ export function createApp(options: CreateAppOptions) {
         jwtSecret,
         publicAppOrigin,
         logger = console,
+        maxStreamClients = 1000,
+        maxStreamClientsPerIp = 20,
         serveStatic = true,
         statusApiMode = "admin",
         staticDir,
@@ -203,8 +321,45 @@ export function createApp(options: CreateAppOptions) {
 
     const publicStreamClients = new Set<PublicStreamClient>();
     const privateStreamClients = new Set<PrivateStreamClient>();
+    const streamClientsByIp = new Map<string, number>();
+
+    function reserveStreamSlot(ip: string): "ok" | "global" | "per_ip" {
+        if (publicStreamClients.size + privateStreamClients.size >= maxStreamClients) {
+            return "global";
+        }
+        if ((streamClientsByIp.get(ip) || 0) >= maxStreamClientsPerIp) {
+            return "per_ip";
+        }
+        streamClientsByIp.set(ip, (streamClientsByIp.get(ip) || 0) + 1);
+        return "ok";
+    }
+
+    function releaseStreamSlot(ip: string) {
+        const next = (streamClientsByIp.get(ip) || 0) - 1;
+        if (next <= 0) {
+            streamClientsByIp.delete(ip);
+        } else {
+            streamClientsByIp.set(ip, next);
+        }
+    }
+
+    function rejectOverCapacityStream(res: Response, reason: "global" | "per_ip") {
+        res.setHeader("Retry-After", "30");
+        diagnostics.chat.lastStreamRejectedAt = new Date().toISOString();
+        diagnostics.chat.lastStreamRejectedReason = reason;
+        logEvent("warn", "chat.stream.rejected", {
+            reason,
+            publicClients: publicStreamClients.size,
+            privateClients: privateStreamClients.size,
+        });
+        res.status(503).json({
+            error: "Too many active connections. Please retry shortly.",
+        });
+    }
     let heartbeatTimer: NodeJS.Timeout | null = null;
     const rateLimits = new Map<string, RateLimitEntry>();
+    const loginRateLimits = new Map<string, number[]>();
+    const registerRateLimits = new Map<string, number[]>();
 
     const ersatzIptvBasePath = normalizeIptvBasePath(ersatzBaseUrl.pathname);
     const scheduleXmlUrl = new URL(ersatzBaseUrl.toString());
@@ -240,6 +395,8 @@ export function createApp(options: CreateAppOptions) {
             lastPrivateDisconnectAt: null as string | null,
             lastPublicConnectAt: null as string | null,
             lastPublicDisconnectAt: null as string | null,
+            lastStreamRejectedAt: null as string | null,
+            lastStreamRejectedReason: null as string | null,
         },
         iptv: {
             lastProxyRequestAt: null as string | null,
@@ -291,7 +448,10 @@ export function createApp(options: CreateAppOptions) {
     }
 
     const rateLimitPruneTimer = setInterval(() => {
-        pruneExpiredRateLimits(Date.now());
+        const now = Date.now();
+        pruneExpiredRateLimits(now);
+        pruneIpRateLimits(loginRateLimits, LOGIN_RATE_WINDOW_MS, now);
+        pruneIpRateLimits(registerRateLimits, REGISTER_RATE_WINDOW_MS, now);
     }, RATE_LIMIT_PRUNE_INTERVAL_MS);
     rateLimitPruneTimer.unref?.();
 
@@ -428,6 +588,9 @@ export function createApp(options: CreateAppOptions) {
                 lastPrivateDisconnectAt: diagnostics.chat.lastPrivateDisconnectAt,
                 lastPublicConnectAt: diagnostics.chat.lastPublicConnectAt,
                 lastPublicDisconnectAt: diagnostics.chat.lastPublicDisconnectAt,
+                lastStreamRejectedAt: diagnostics.chat.lastStreamRejectedAt,
+                lastStreamRejectedReason: diagnostics.chat.lastStreamRejectedReason,
+                activeStreamIps: streamClientsByIp.size,
             },
             iptv: {
                 lastPlaylistRewriteAt: diagnostics.iptv.lastPlaylistRewriteAt,
@@ -638,6 +801,34 @@ export function createApp(options: CreateAppOptions) {
         return next();
     };
 
+    app.use((req: Request, res: Response, next: NextFunction) => {
+        // Leave the IPTV reverse proxy as a clean pass-through: it serves media
+        // (not HTML documents) and may be consumed by external IPTV clients, so
+        // document-oriented headers like CSP don't belong on it.
+        if (req.path === "/iptv" || req.path.startsWith("/iptv/")) {
+            return next();
+        }
+
+        res.setHeader("Content-Security-Policy", CONTENT_SECURITY_POLICY);
+        res.setHeader("X-Content-Type-Options", "nosniff");
+        res.setHeader("X-Frame-Options", "DENY");
+        res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+        res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+        res.setHeader("Permissions-Policy", PERMISSIONS_POLICY);
+
+        // HSTS is only honored over HTTPS; gate it so plain-HTTP/local runs
+        // don't advertise it. No includeSubDomains/preload to avoid pinning
+        // sibling hosts the operator may serve over HTTP.
+        if (isSecureRequest(req)) {
+            res.setHeader(
+                "Strict-Transport-Security",
+                `max-age=${HSTS_MAX_AGE_SECONDS}`
+            );
+        }
+
+        return next();
+    });
+
     app.get("/health", (_req: Request, res: Response) => {
         res.json({ ok: true });
     });
@@ -755,12 +946,7 @@ export function createApp(options: CreateAppOptions) {
         }
     );
 
-    apiChatRouter.use(
-        cors({
-            origin: corsOrigin === "*" ? true : corsOrigin,
-            credentials: true,
-        })
-    );
+    apiChatRouter.use(cors(resolveCorsOptions(corsOrigin)));
     apiChatRouter.use(express.json({ limit: "8kb" }));
 
     apiChatRouter.get("/health", (_req: Request, res: Response) => {
@@ -790,6 +976,26 @@ export function createApp(options: CreateAppOptions) {
         if (passwordError) {
             return res.status(400).json({ error: passwordError });
         }
+
+        const registerIp = req.ip || "unknown";
+        const registerNow = Date.now();
+        const registerRateLimit = checkIpRateLimit(
+            registerRateLimits,
+            registerIp,
+            REGISTER_RATE_LIMIT_MAX,
+            REGISTER_RATE_WINDOW_MS,
+            registerNow
+        );
+        if (!registerRateLimit.allowed) {
+            diagnostics.chat.lastAuthFailureAt = new Date().toISOString();
+            diagnostics.chat.lastAuthFailureReason = "register_rate_limited";
+            res.setHeader("Retry-After", String(registerRateLimit.retryAfterSeconds));
+            return res.status(429).json({
+                error: "Too many sign-up attempts. Please try again later.",
+                retryAfterSeconds: registerRateLimit.retryAfterSeconds,
+            });
+        }
+        recordIpRateLimit(registerRateLimits, registerIp, registerNow);
 
         const existingUser = await db.get<{ banned: number }>(
             "SELECT banned FROM users WHERE nickname = ? COLLATE NOCASE",
@@ -848,6 +1054,25 @@ export function createApp(options: CreateAppOptions) {
             return res.status(400).json({ error: passwordError });
         }
 
+        const loginIp = req.ip || "unknown";
+        const loginNow = Date.now();
+        const loginRateLimit = checkIpRateLimit(
+            loginRateLimits,
+            loginIp,
+            LOGIN_RATE_LIMIT_MAX,
+            LOGIN_RATE_WINDOW_MS,
+            loginNow
+        );
+        if (!loginRateLimit.allowed) {
+            diagnostics.chat.lastAuthFailureAt = new Date().toISOString();
+            diagnostics.chat.lastAuthFailureReason = "login_rate_limited";
+            res.setHeader("Retry-After", String(loginRateLimit.retryAfterSeconds));
+            return res.status(429).json({
+                error: "Too many login attempts. Please try again later.",
+                retryAfterSeconds: loginRateLimit.retryAfterSeconds,
+            });
+        }
+
         const user = await db.get<{
             nickname: string;
             password_hash: string;
@@ -861,12 +1086,14 @@ export function createApp(options: CreateAppOptions) {
         );
 
         if (!user) {
+            recordIpRateLimit(loginRateLimits, loginIp, loginNow);
             diagnostics.chat.lastAuthFailureAt = new Date().toISOString();
             diagnostics.chat.lastAuthFailureReason = "login_user_missing";
             return res.status(401).json({ error: "Invalid credentials" });
         }
 
         if (user.banned) {
+            recordIpRateLimit(loginRateLimits, loginIp, loginNow);
             diagnostics.chat.lastAuthFailureAt = new Date().toISOString();
             diagnostics.chat.lastAuthFailureReason = "login_user_banned";
             return res.status(403).json({ error: "this account has been banned" });
@@ -874,6 +1101,7 @@ export function createApp(options: CreateAppOptions) {
 
         const ok = await bcrypt.compare(password, user.password_hash);
         if (!ok) {
+            recordIpRateLimit(loginRateLimits, loginIp, loginNow);
             diagnostics.chat.lastAuthFailureAt = new Date().toISOString();
             diagnostics.chat.lastAuthFailureReason = "login_password_mismatch";
             return res.status(401).json({ error: "Invalid credentials" });
@@ -912,6 +1140,12 @@ export function createApp(options: CreateAppOptions) {
     });
 
     apiChatRouter.get("/messages/stream", requireAuth, async (req: AuthedRequest, res: Response) => {
+        const ip = req.ip || "unknown";
+        const reservation = reserveStreamSlot(ip);
+        if (reservation !== "ok") {
+            return rejectOverCapacityStream(res, reservation);
+        }
+
         res.setHeader("Content-Type", "text/event-stream");
         res.setHeader("Cache-Control", "no-cache");
         res.setHeader("Connection", "keep-alive");
@@ -923,6 +1157,7 @@ export function createApp(options: CreateAppOptions) {
         writeSseEvent(res, "ready", { ok: true });
 
         const client: PrivateStreamClient = {
+            ip,
             nickname: req.user?.nickname || "",
             res,
         };
@@ -936,6 +1171,7 @@ export function createApp(options: CreateAppOptions) {
 
         req.on("close", () => {
             privateStreamClients.delete(client);
+            releaseStreamSlot(ip);
             diagnostics.chat.lastPrivateDisconnectAt = new Date().toISOString();
             logEvent("info", "chat.stream.private.disconnected", {
                 nickname: client.nickname,
@@ -951,6 +1187,12 @@ export function createApp(options: CreateAppOptions) {
     });
 
     apiChatRouter.get("/messages/public/stream", (_req: Request, res: Response) => {
+        const ip = _req.ip || "unknown";
+        const reservation = reserveStreamSlot(ip);
+        if (reservation !== "ok") {
+            return rejectOverCapacityStream(res, reservation);
+        }
+
         res.setHeader("Content-Type", "text/event-stream");
         res.setHeader("Cache-Control", "no-cache");
         res.setHeader("Connection", "keep-alive");
@@ -961,7 +1203,7 @@ export function createApp(options: CreateAppOptions) {
         res.write("retry: 5000\n\n");
         writeSseEvent(res, "ready", { ok: true });
 
-        const client: PublicStreamClient = { res };
+        const client: PublicStreamClient = { ip, res };
         publicStreamClients.add(client);
         diagnostics.chat.lastPublicConnectAt = new Date().toISOString();
         logEvent("info", "chat.stream.public.connected", {
@@ -971,6 +1213,7 @@ export function createApp(options: CreateAppOptions) {
 
         _req.on("close", () => {
             publicStreamClients.delete(client);
+            releaseStreamSlot(ip);
             diagnostics.chat.lastPublicDisconnectAt = new Date().toISOString();
             logEvent("info", "chat.stream.public.disconnected", {
                 publicClients: publicStreamClients.size,

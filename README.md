@@ -64,6 +64,13 @@ Node + Express + SQLite
 ### Notes
 
 - Simple username/password auth
+- Auth endpoints are rate limited per client IP: login allows 10 failed
+  attempts per 15 minutes, register allows 5 accounts per hour (set `TRUST_PROXY`
+  behind a reverse proxy so these see real client addresses)
+- Security response headers (Content-Security-Policy, X-Frame-Options: DENY,
+  X-Content-Type-Options, Referrer-Policy, Cross-Origin-Opener-Policy,
+  Permissions-Policy, and HSTS over HTTPS) are sent on app responses; the `/iptv`
+  proxy is left as a clean pass-through
 - 100-message history cap
 - Username must be 3-24 chars: letters, numbers, underscore, hyphen
 - Password length: 6-72 chars
@@ -83,7 +90,7 @@ INITIAL_ADMIN_NICKNAME=andromedatv # Required - bootstraps the first admin if no
 
 INITIAL_ADMIN_PASSWORD=replace_me # Required - must be set together with INITIAL_ADMIN_NICKNAME
 
-CORS_ORIGIN=https://yourdomain.com # Optional - default is "*"
+CORS_ORIGIN=https://yourdomain.com # Optional - default is same-origin only. Set a specific origin (or comma-separated list) to let a separate first-party frontend use cookie auth. "*" allows any origin but disables credentials.
 
 PUBLIC_APP_ORIGIN=https://yourdomain.com # Recommended behind a reverse proxy and for IPTV playlist rewriting
 
@@ -94,6 +101,10 @@ TRUST_PROXY=true # Optional - only set when running behind a trusted reverse pro
 JWT_SECRET=replace_me # Optional - if omitted, the app will generate and persist one under /data
 
 DB_PATH=/data/andromeda.db # Optional - default database path
+
+MAX_STREAM_CLIENTS=1000 # Optional - global cap on concurrent chat (SSE) connections; raise the container's open-file limit if you increase this
+
+MAX_STREAM_CLIENTS_PER_IP=20 # Optional - per-IP cap on concurrent chat (SSE) connections
 
 ```
 
