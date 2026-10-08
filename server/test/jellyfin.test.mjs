@@ -74,7 +74,10 @@ test("uses the episode's full PremiereDate, not the series year", async () => {
     assert.equal(result[2].year, undefined);
 
     // Resolved series first, then fetched only the scheduled season.
-    assert.equal(calls[0].init.headers["X-Emby-Token"], "secret");
+    assert.equal(
+        calls[0].init.headers.Authorization,
+        'MediaBrowser Token="secret"'
+    );
     assert.ok(calls[0].url.includes("IncludeItemTypes=Series"));
     assert.ok(calls.some((c) => /\/Shows\/conan\/Episodes/.test(c.url)));
     assert.ok(calls.some((c) => new URL(c.url).searchParams.get("season") === "5"));
