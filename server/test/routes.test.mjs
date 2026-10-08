@@ -299,7 +299,21 @@ test("security headers are set on application responses", async () => {
             "same-origin"
         );
         assert.ok(response.headers["permissions-policy"]);
-        // HSTS is gated on secure requests; supertest speaks plain HTTP here.
+        assert.equal(response.headers["strict-transport-security"], undefined);
+    } finally {
+        await context.cleanup();
+    }
+});
+
+test("no HSTS header even when served over HTTPS", async () => {
+    const context = await createTestContext({
+        publicAppOrigin: "https://stream.example.com",
+    });
+
+    try {
+        const response = await request(context.app).get("/health");
+
+        assert.equal(response.status, 200);
         assert.equal(response.headers["strict-transport-security"], undefined);
     } finally {
         await context.cleanup();
