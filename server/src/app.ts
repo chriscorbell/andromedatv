@@ -81,8 +81,6 @@ const PERMISSIONS_POLICY = [
     "usb=()",
 ].join(", ");
 
-const HSTS_MAX_AGE_SECONDS = 180 * 24 * 60 * 60;
-
 type AuthedRequest = Request & {
     user?: {
         nickname: string;
@@ -816,15 +814,8 @@ export function createApp(options: CreateAppOptions) {
         res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
         res.setHeader("Permissions-Policy", PERMISSIONS_POLICY);
 
-        // HSTS is only honored over HTTPS; gate it so plain-HTTP/local runs
-        // don't advertise it. No includeSubDomains/preload to avoid pinning
-        // sibling hosts the operator may serve over HTTP.
-        if (isSecureRequest(req)) {
-            res.setHeader(
-                "Strict-Transport-Security",
-                `max-age=${HSTS_MAX_AGE_SECONDS}`
-            );
-        }
+        // No HSTS: a browser applies it to every port of the host name, so it
+        // would force HTTPS on plain-HTTP apps that share this host's name.
 
         return next();
     });

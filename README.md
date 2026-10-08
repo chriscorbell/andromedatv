@@ -69,7 +69,7 @@ Node + Express + SQLite
   behind a reverse proxy so these see real client addresses)
 - Security response headers (Content-Security-Policy, X-Frame-Options: DENY,
   X-Content-Type-Options, Referrer-Policy, Cross-Origin-Opener-Policy,
-  Permissions-Policy, and HSTS over HTTPS) are sent on app responses; the `/iptv`
+  and Permissions-Policy) are sent on app responses, but not HSTS; the `/iptv`
   proxy is left as a clean pass-through
 - 100-message history cap
 - Username must be 3-24 chars: letters, numbers, underscore, hyphen
