@@ -135,8 +135,10 @@ export function createJellyfinYearProvider(config: {
     const seasonInflight = new Map<string, Promise<Map<number, Release>>>();
 
     const fetchJson = async (url: string): Promise<unknown> => {
+        // Jellyfin rejects the legacy X-Emby-Token header unless
+        // EnableLegacyAuthorization is on; the Authorization header always works.
         const response = await fetchImpl(url, {
-            headers: { "X-Emby-Token": apiKey },
+            headers: { Authorization: `MediaBrowser Token="${apiKey}"` },
         });
         if (!response.ok) {
             throw new Error(`Jellyfin request failed: ${response.status}`);
